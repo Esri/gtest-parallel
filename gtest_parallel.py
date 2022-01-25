@@ -55,6 +55,7 @@ else:
 # wait(p) will call p.terminate() and raise ProcessWasInterrupted.
 class SigintHandler(object):
   class ProcessWasInterrupted(Exception): pass
+  class ProcessTimeout(Exception): pass
   sigint_returncodes = {-signal.SIGINT,  # Unix
                         -1073741510,     # Windows
                         }
@@ -62,28 +63,39 @@ class SigintHandler(object):
     self.__lock = threading.Lock()
     self.__processes = set()
     self.__got_sigint = False
+    self.__timeout = False
     signal.signal(signal.SIGINT, lambda signal_num, frame: self.interrupt())
   def __on_sigint(self):
-    self.__got_sigint = True
-    while self.__processes:
-      try:
-        self.__processes.pop().terminate()
-      except OSError:
-        pass
+    if not self.__timeout:
+      self.__got_sigint = True
+      while self.__processes:
+        try:
+          self.__processes.pop().terminate()
+        except OSError:
+          pass
   def interrupt(self):
     with self.__lock:
       self.__on_sigint()
   def got_sigint(self):
     with self.__lock:
       return self.__got_sigint
-  def wait(self, p):
+  def wait(self, p, timeout=None):
     with self.__lock:
       if self.__got_sigint:
         p.terminate()
       self.__processes.add(p)
-    code = p.wait()
+    try:
+      code = p.wait(timeout=timeout)
+    except (subprocess.TimeoutExpired):
+      with self.__lock:
+        self.__timeout = True
+        p.terminate()
+      pass
+
     with self.__lock:
       self.__processes.discard(p)
+      if self.__timeout:
+        raise self.ProcessTimeout
       if code in self.sigint_returncodes:
         self.__on_sigint()
       if self.__got_sigint:
@@ -175,6 +187,7 @@ class Task(object):
 
     self.exit_code = None
     self.runtime_ms = None
+    self.process_timeout = False
 
     self.test_id = (test_binary, test_name)
     self.task_id = (test_binary, test_name, self.execution_number)
@@ -216,14 +229,17 @@ class Task(object):
 
     return os.path.join(output_dir, log_name)
 
-  def run(self):
+  def run(self, test_timeout):
     begin = time.time()
     with open(self.log_file, 'w') as log:
       task = subprocess.Popen(self.test_command, stdout=log, stderr=log)
       try:
-        self.exit_code = sigint_handler.wait(task)
+        self.exit_code = sigint_handler.wait(task, timeout = test_timeout)
       except sigint_handler.ProcessWasInterrupted:
         thread.exit()
+      except sigint_handler.ProcessTimeout:
+        self.process_timeout = True
+        pass
     self.runtime_ms = int(1000 * (time.time() - begin))
     self.last_execution_time = None if self.exit_code else self.runtime_ms
 
@@ -270,8 +286,12 @@ class TaskManager(object):
     self.times.record_test_time(task.test_binary, task.test_name,
                                 task.last_execution_time)
     if self.test_results:
-      self.test_results.log(task.test_name, task.runtime_ms,
-                            "PASS" if task.exit_code == 0 else "FAIL")
+      msg = "FAIL"
+      if task.process_timeout:
+        msg = "TIMEOUT"
+      elif task.exit_code == 0:
+        msg = "PASS"
+      self.test_results.log(task.test_name, task.runtime_ms, msg)
 
     with self.lock:
       self.started.pop(task.task_id)
@@ -280,10 +300,10 @@ class TaskManager(object):
       else:
         self.failed.append(task)
 
-  def run_task(self, task):
+  def run_task(self, task, test_timeout):
     for try_number in range(self.times_to_retry + 1):
       self.__register_start(task)
-      task.run()
+      task.run(test_timeout)
       self.__register_exit(task)
 
       if task.exit_code == 0:
@@ -338,6 +358,8 @@ class FilterFormat(object):
       runtime_ms = 'Interrupted'
       if task.runtime_ms is not None:
         runtime_ms = '%d ms' % task.runtime_ms
+      if task.process_timeout:
+        runtime_ms = 'Timeout'
       self.out.permanent_line("%11s: %s %s%s" % (
           runtime_ms, task.test_binary, task.test_name,
           (" (try #%d)" % task.execution_number) if print_try_number else ""))
@@ -352,10 +374,15 @@ class FilterFormat(object):
         with open(task.log_file) as f:
           for line in f.readlines():
             self.out.permanent_line(line.rstrip())
-        self.out.permanent_line(
-          "[%d/%d] %s returned/aborted with exit code %d (%d ms)"
-          % (self.finished_tasks, self.total_tasks, task.test_name,
-             task.exit_code, task.runtime_ms))
+        if task.process_timeout:
+          self.out.permanent_line(
+            "[%d/%d] %s timed out"
+            % (self.finished_tasks, self.total_tasks, task.test_name))
+        else:
+          self.out.permanent_line(
+            "[%d/%d] %s returned/aborted with exit code %d (%d ms)"
+            % (self.finished_tasks, self.total_tasks, task.test_name,
+               task.exit_code, task.runtime_ms))
 
     if self.output_dir is None:
       # Try to remove the file 100 times (sleeping for 0.1 second in between).
@@ -427,6 +454,7 @@ class CollectTestResults(object):
         "num_failures_by_type": {
             "PASS": 0,
             "FAIL": 0,
+            "TIMEOUT": 0,
         },
         "tests": {},
     }
@@ -638,7 +666,7 @@ def find_tests(binaries, additional_args, options, times):
 
 
 def execute_tasks(tasks, pool_size, task_manager,
-                  timeout, serialize_test_cases):
+                  timeout, test_timeout, serialize_test_cases):
   class WorkerFn(object):
     def __init__(self, tasks, running_groups):
       self.tasks = tasks
@@ -666,7 +694,7 @@ def execute_tasks(tasks, pool_size, task_manager,
             # cases (groups) is less than number or running threads.
             return
 
-        task_manager.run_task(task)
+        task_manager.run_task(task, test_timeout)
 
         if self.running_groups is not None:
           with self.task_lock:
@@ -733,6 +761,9 @@ def default_options_parser():
                          'https://www.chromium.org/developers/the-json-test-results-format')
   parser.add_option('--timeout', type='int', default=None,
                     help='Interrupt all remaining processes after the given '
+                         'time (in seconds).')
+  parser.add_option('--test_timeout', type='int', default=None,
+                    help='Interrupt a single test after the given '
                          'time (in seconds).')
   parser.add_option('--serialize_test_cases', action='store_true',
                     default=False, help='Do not run tests from the same test '
@@ -816,7 +847,7 @@ def main():
   tasks = find_tests(binaries, additional_args, options, times)
   logger.log_tasks(len(tasks))
   execute_tasks(tasks, options.workers, task_manager,
-                timeout, options.serialize_test_cases)
+                timeout, options.test_timeout, options.serialize_test_cases)
 
   print_try_number = options.retry_failed > 0 or options.repeat > 1
   if task_manager.passed:
