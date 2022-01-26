@@ -763,8 +763,7 @@ def default_options_parser():
                     help='Interrupt all remaining processes after the given '
                          'time (in seconds).')
   parser.add_option('--test_timeout', type='int', default=None,
-                    help='Interrupt a single test after the given '
-                         'time (in seconds).')
+                    help='Interrupt each test after the given time (in seconds).')
   parser.add_option('--serialize_test_cases', action='store_true',
                     default=False, help='Do not run tests from the same test '
                                         'case in parallel.')
