@@ -176,12 +176,13 @@ class Task(object):
   Additionaly we store the last execution time, so that next time the test is
   executed, the slowest tests are run first.
   """
-  def __init__(self, test_binary, test_name, test_command, execution_number,
+  def __init__(self, test_binary, test_name, test_command, should_log_xml, execution_number,
                last_execution_time, output_dir):
     self.test_name = test_name
     self.output_dir = output_dir
     self.test_binary = test_binary
     self.test_command = test_command
+    self.should_log_xml = should_log_xml
     self.execution_number = execution_number
     self.last_execution_time = last_execution_time
 
@@ -191,9 +192,16 @@ class Task(object):
 
     self.test_id = (test_binary, test_name)
     self.task_id = (test_binary, test_name, self.execution_number)
-
     self.log_file = Task._logname(self.output_dir, self.test_binary,
                                   test_name, self.execution_number)
+    
+    # xml file is located in the same space as the log file,
+    # with the same root name, but a different extension (.xml)
+    self.xml_file = None
+    self.__complete_command = self.test_command[:]
+    if should_log_xml:
+      self.xml_file = os.path.splitext(self.log_file)[0] + '.xml'
+      self.__complete_command += ['--gtest_output=xml:' + os.path.abspath(self.xml_file)]
 
   def __sorting_key(self):
     # Unseen or failing tests (both missing execution time) take precedence over
@@ -232,7 +240,7 @@ class Task(object):
   def run(self, test_timeout):
     begin = time.time()
     with open(self.log_file, 'w') as log:
-      task = subprocess.Popen(self.test_command, stdout=log, stderr=log)
+      task = subprocess.Popen(self.__complete_command, stdout=log, stderr=log)
       try:
         self.exit_code = sigint_handler.wait(task, timeout = test_timeout)
       except sigint_handler.ProcessWasInterrupted:
@@ -286,6 +294,26 @@ class TaskManager(object):
     self.logger.log_exit(task)
     self.times.record_test_time(task.test_binary, task.test_name,
                                 task.last_execution_time)
+
+    def try_remove_file(log):
+      """ Try to remove the file 100 times (sleeping for 0.1 second in between).
+      This is a workaround for a process handle seemingly holding on to the
+      file for too long inside os.subprocess. This workaround is in place
+      until we figure out a minimal repro to report upstream (or a better
+      suspect) to prevent os.remove exceptions."""
+      num_tries = 100
+      for i in range(num_tries):
+        try:
+          os.remove(log)
+        except OSError as e:
+          if e.errno is not errno.ENOENT: 
+            if i is num_tries - 1:
+              self.out.permanent_line('Could not remove temporary log file: ' + str(e))
+            else:
+              time.sleep(0.1)
+            continue
+        break
+
     if self.test_results:
       msg = "FAIL"
       if task.process_timeout:
@@ -293,25 +321,13 @@ class TaskManager(object):
       elif task.exit_code == 0:
         msg = "PASS"
       self.test_results.log(task.test_name, task.runtime_ms, msg)
+      # Always remove temporary xml file
+      # (these will be aggregated into one file)
+      try_remove_file(task.xml_file)
 
+    # Only remove log file if output dir not specified
     if self.output_dir is None:
-      # Try to remove the file 100 times (sleeping for 0.1 second in between).
-      # This is a workaround for a process handle seemingly holding on to the
-      # file for too long inside os.subprocess. This workaround is in place
-      # until we figure out a minimal repro to report upstream (or a better
-      # suspect) to prevent os.remove exceptions.
-      num_tries = 100
-      for i in range(num_tries):
-        try:
-          os.remove(task.log_file)
-        except OSError as e:
-          if e.errno is not errno.ENOENT:
-            if i is num_tries - 1:
-              self.out.permanent_line('Could not remove temporary log file: ' + str(e))
-            else:
-              time.sleep(0.1)
-            continue
-        break
+      try_remove_file(task.log_file)
 
     with self.lock:
       self.started.pop(task.task_id)
@@ -334,7 +350,7 @@ class TaskManager(object):
         # We need create a new Task instance. Each task represents a single test
         # execution, with its own runtime, exit code and log file.
         task = self.task_factory(task.test_binary, task.test_name,
-                                 task.test_command, execution_number,
+                                 task.test_command, task.should_log_xml, execution_number,
                                  task.last_execution_time, task.output_dir)
 
     with self.lock:
@@ -442,44 +458,17 @@ class FilterFormat(object):
 
 
 class CollectTestResults(object):
-  def __init__(self, json_dump_filepath):
+  def __init__(self, xml_dump_filepath):
     self.test_results_lock = threading.Lock()
-    self.json_dump_file = open(json_dump_filepath, 'w')
-    self.test_results = {
-        "interrupted": False,
-        "path_delimiter": ".",
-        # Third version of the file format. See the link in the flag description
-        # for details.
-        "version": 3,
-        "seconds_since_epoch": int(time.time()),
-        "num_failures_by_type": {
-            "PASS": 0,
-            "FAIL": 0,
-            "TIMEOUT": 0,
-        },
-        "tests": {},
-    }
+    self.xml_dump_file = open(xml_dump_filepath, 'w')
+    self.test_results = None # TODO: implement
 
   def log(self, test, runtime_ms, actual_result):
-    with self.test_results_lock:
-      self.test_results['num_failures_by_type'][actual_result] += 1
-      results = self.test_results['tests']
-      for name in test.split('.'):
-        results = results.setdefault(name, {})
-
-      if results:
-        results['actual'] += ' ' + actual_result
-        results['times'].append(runtime_ms)
-      else:  # This is the first invocation of the test
-        results['actual'] = actual_result
-        results['times'] = [runtime_ms]
-        results['time'] = runtime_ms
-        results['expected'] = 'PASS'
+    with self.test_results_lock: pass # TODO: implement
 
   def dump_to_file_and_close(self):
-    json.dump(self.test_results, self.json_dump_file)
-    self.json_dump_file.close()
-
+    # TODO: implement
+    self.xml_dump_file.close()
 
 # Record of test runtimes. Has built-in locking.
 class TestTimes(object):
@@ -653,9 +642,11 @@ def find_tests(binaries, additional_args, options, times):
         continue
 
       test_command = command + ['--gtest_filter=' + test_name]
+      
+      should_log_xml = options.dump_xml_test_results
       if (test_count - options.shard_index) % options.shard_count == 0:
         for execution_number in range(options.repeat):
-          tasks.append(Task(test_binary, test_name, test_command,
+          tasks.append(Task(test_binary, test_name, test_command, should_log_xml,
                             execution_number + 1, last_execution_time,
                             options.output_dir))
 
@@ -756,10 +747,10 @@ def default_options_parser():
   parser.add_option('--shard_index', type='int', default=0,
                     help='zero-indexed number identifying this shard (for '
                          'sharding test execution between multiple machines)')
-  parser.add_option('--dump_json_test_results', type='string', default=None,
-                    help='Saves the results of the tests as a JSON machine-'
+  parser.add_option('--dump_xml_test_results', type='string', default=None,
+                    help='Saves the results of the tests as an XML machine-'
                          'readable file. The format of the file is specified at '
-                         'https://www.chromium.org/developers/the-json-test-results-format')
+                         'https://github.com/google/googletest/blob/1b18723e874b256c1e39378c6774a90701d70f7a/docs/advanced.md#generating-an-xml-report')
   parser.add_option('--timeout', type='int', default=None,
                     help='Interrupt all remaining processes after the given '
                          'time (in seconds).')
@@ -833,8 +824,8 @@ def main():
     timeout = threading.Timer(options.timeout, sigint_handler.interrupt)
 
   test_results = None
-  if options.dump_json_test_results is not None:
-    test_results = CollectTestResults(options.dump_json_test_results)
+  if options.dump_xml_test_results is not None:
+    test_results = CollectTestResults(options.dump_xml_test_results)
 
   save_file = get_save_file_path()
 
