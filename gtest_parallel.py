@@ -252,12 +252,13 @@ class TaskManager(object):
   Logger, TestResults and TestTimes classes, and in case of failure, retries the
   test as specified by the --retry_failed flag.
   """
-  def __init__(self, times, logger, test_results, task_factory, times_to_retry,
+  def __init__(self, times, logger, test_results, task_factory, output_dir, times_to_retry,
                initial_execution_number):
     self.times = times
     self.logger = logger
     self.test_results = test_results
     self.task_factory = task_factory
+    self.output_dir = output_dir
     self.times_to_retry = times_to_retry
     self.initial_execution_number = initial_execution_number
 
@@ -292,6 +293,25 @@ class TaskManager(object):
       elif task.exit_code == 0:
         msg = "PASS"
       self.test_results.log(task.test_name, task.runtime_ms, msg)
+
+    if self.output_dir is None:
+      # Try to remove the file 100 times (sleeping for 0.1 second in between).
+      # This is a workaround for a process handle seemingly holding on to the
+      # file for too long inside os.subprocess. This workaround is in place
+      # until we figure out a minimal repro to report upstream (or a better
+      # suspect) to prevent os.remove exceptions.
+      num_tries = 100
+      for i in range(num_tries):
+        try:
+          os.remove(task.log_file)
+        except OSError as e:
+          if e.errno is not errno.ENOENT:
+            if i is num_tries - 1:
+              self.out.permanent_line('Could not remove temporary log file: ' + str(e))
+            else:
+              time.sleep(0.1)
+            continue
+        break
 
     with self.lock:
       self.started.pop(task.task_id)
@@ -383,25 +403,6 @@ class FilterFormat(object):
             "[%d/%d] %s returned/aborted with exit code %d (%d ms)"
             % (self.finished_tasks, self.total_tasks, task.test_name,
                task.exit_code, task.runtime_ms))
-
-    if self.output_dir is None:
-      # Try to remove the file 100 times (sleeping for 0.1 second in between).
-      # This is a workaround for a process handle seemingly holding on to the
-      # file for too long inside os.subprocess. This workaround is in place
-      # until we figure out a minimal repro to report upstream (or a better
-      # suspect) to prevent os.remove exceptions.
-      num_tries = 100
-      for i in range(num_tries):
-        try:
-          os.remove(task.log_file)
-        except OSError as e:
-          if e.errno is not errno.ENOENT:
-            if i is num_tries - 1:
-              self.out.permanent_line('Could not remove temporary log file: ' + str(e))
-            else:
-              time.sleep(0.1)
-            continue
-        break
 
   def log_tasks(self, total_tasks):
     self.total_tasks += total_tasks
@@ -840,7 +841,7 @@ def main():
   times = TestTimes(save_file)
   logger = FilterFormat(options.output_dir)
 
-  task_manager = TaskManager(times, logger, test_results, Task,
+  task_manager = TaskManager(times, logger, test_results, Task, options.output_dir,
                              options.retry_failed, options.repeat + 1)
 
   tasks = find_tests(binaries, additional_args, options, times)
