@@ -27,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+import xml.etree.ElementTree as ET
 
 if sys.version_info.major >= 3:
     long = int
@@ -251,6 +252,54 @@ class Task(object):
     self.runtime_ms = int(1000 * (time.time() - begin))
     self.last_execution_time = None if self.exit_code else self.runtime_ms
 
+class XMLLogger(object):
+  """
+  Aggregates XML data from individual test log files into a single XML file
+  """
+  def __init__(self, xml_dump_filepath):
+    self.test_results_lock = threading.Lock()
+    self.xml_dump_filepath = xml_dump_filepath
+    self.output_xml = None
+
+  def __combine_xml(self, log_file):
+    suites_to_add = ET.parse(log_file).getroot()
+    testsuites = self.output_xml.getroot()
+    # TODO: update counts for failures, disabled, errors, skipped, etc.
+    for suite_to_add in suites_to_add:
+      for existing_suite in testsuites:
+        if suite_to_add.get('name') == existing_suite.get('name'):
+          # found: append each test case to main_XML testsuite
+          for case in suite_to_add:
+            
+            existing_suite.set('tests', str(int(existing_suite.get('tests')) + 1))
+            testsuites.set('tests', str(int(testsuites.get('tests')) + 1))
+            existing_suite.append(case)
+          suite_to_add.clear() # clear out appended suites, sets attribs to None
+
+    # add any testsuites that don't match existing to the list of testsuites
+    for suite_to_add in suites_to_add:
+      if suite_to_add.get('name') is not None: 
+        testsuites.set('tests', str(int(testsuites.get('tests')) + 1))
+        testsuites.append(suite_to_add)
+  
+  def log_xml(self, temp_file, additional_msg):
+    with self.test_results_lock:
+      if additional_msg is not None: pass # TODO: implement unhappy path
+      if self.output_xml is None:
+        # first time reading, just directly copy XML from temp file
+        with open(temp_file, 'r') as log:
+          lines = ''
+          for line in log.readlines():
+            lines += line
+          if lines != '':
+            tree = ET.fromstring(lines)
+            self.output_xml = ET.ElementTree(tree)
+      else:
+        self.__combine_xml(temp_file)
+
+  def dump_to_file_and_close(self):
+    if(self.output_xml):
+      self.output_xml.write(self.xml_dump_filepath)
 
 class TaskManager(object):
   """Executes the tasks and stores the passed, failed and interrupted tasks.
@@ -260,11 +309,11 @@ class TaskManager(object):
   Logger, TestResults and TestTimes classes, and in case of failure, retries the
   test as specified by the --retry_failed flag.
   """
-  def __init__(self, times, logger, test_results, task_factory, output_dir, times_to_retry,
+  def __init__(self, times, logger, xml_logger, task_factory, output_dir, times_to_retry,
                initial_execution_number):
     self.times = times
     self.logger = logger
-    self.test_results = test_results
+    self.xml_logger = xml_logger
     self.task_factory = task_factory
     self.output_dir = output_dir
     self.times_to_retry = times_to_retry
@@ -314,13 +363,13 @@ class TaskManager(object):
             continue
         break
 
-    if self.test_results:
+    if self.xml_logger:
       msg = "FAIL"
       if task.process_timeout:
         msg = "TIMEOUT"
       elif task.exit_code == 0:
         msg = "PASS"
-      self.test_results.log(task.test_name, task.runtime_ms, msg)
+      self.xml_logger.log_xml(task.xml_file, msg)
       # Always remove temporary xml file
       # (these will be aggregated into one file)
       try_remove_file(task.xml_file)
@@ -455,20 +504,6 @@ class FilterFormat(object):
 
   def flush(self):
     self.out.flush_transient_output()
-
-
-class CollectTestResults(object):
-  def __init__(self, xml_dump_filepath):
-    self.test_results_lock = threading.Lock()
-    self.xml_dump_file = open(xml_dump_filepath, 'w')
-    self.test_results = None # TODO: implement
-
-  def log(self, test, runtime_ms, actual_result):
-    with self.test_results_lock: pass # TODO: implement
-
-  def dump_to_file_and_close(self):
-    # TODO: implement
-    self.xml_dump_file.close()
 
 # Record of test runtimes. Has built-in locking.
 class TestTimes(object):
@@ -823,16 +858,16 @@ def main():
   if options.timeout is not None:
     timeout = threading.Timer(options.timeout, sigint_handler.interrupt)
 
-  test_results = None
+  xml_logger = None
   if options.dump_xml_test_results is not None:
-    test_results = CollectTestResults(options.dump_xml_test_results)
+    xml_logger = XMLLogger(options.dump_xml_test_results)
 
   save_file = get_save_file_path()
 
   times = TestTimes(save_file)
   logger = FilterFormat(options.output_dir)
 
-  task_manager = TaskManager(times, logger, test_results, Task, options.output_dir,
+  task_manager = TaskManager(times, logger, xml_logger, Task, options.output_dir,
                              options.retry_failed, options.repeat + 1)
 
   tasks = find_tests(binaries, additional_args, options, times)
@@ -861,8 +896,8 @@ def main():
 
   logger.flush()
   times.write_to_file(save_file)
-  if test_results:
-    test_results.dump_to_file_and_close()
+  if xml_logger:
+    xml_logger.dump_to_file_and_close()
 
   if sigint_handler.got_sigint():
     return -signal.SIGINT
