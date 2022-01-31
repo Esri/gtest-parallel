@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from enum import Enum
 import errno
 from functools import total_ordering
 import gzip
@@ -252,6 +253,14 @@ class Task(object):
     self.runtime_ms = int(1000 * (time.time() - begin))
     self.last_execution_time = None if self.exit_code else self.runtime_ms
 
+class TaskOutcome(Enum):
+  """
+  Handy enum type used to interpret Task outcomes
+  """
+  PASS = 0
+  FAIL = 1
+  TIMEOUT = 2
+
 class XMLLogger(object):
   """
   Aggregates XML data from individual test log files into a single XML file
@@ -260,44 +269,78 @@ class XMLLogger(object):
     self.test_results_lock = threading.Lock()
     self.xml_dump_filepath = xml_dump_filepath
     self.output_xml = None
+  
+  def __construct_from_timeout(self, task):
+    """
+    Helper: Construct conformant XML from a test that has timed out (and thus hasn't
+    produced valid XML on its own)
+    """
+    # TODO: piece together XML from stdout results
+    pass
 
-  def __combine_xml(self, log_file):
-    suites_to_add = ET.parse(log_file).getroot()
+  def __construct_from_failure(self, task):
+    """
+    Helper: Construct conformant XML from a test that has failed. If the test crashed,
+    it may not have generated valid XML. Handle this case by manually-constructing
+    conformant XML from stdout/stderr output
+    """
+    try:
+      element = ET.parse(task.xml_file)
+    except: 
+      return None
+      # TODO: piece together XML from stdout results
+
+  def __generate_new_xml(self, task, result):
+    """
+    Helper: Generate valid / conformant XML given a Task and its Result. Handles
+    PASS, TIMEOUT, and FAILURE TaskOutcomes.
+    """
+    if result is TaskOutcome.PASS: 
+      return ET.parse(task.xml_file)
+    if result is TaskOutcome.TIMEOUT:
+      return self.__construct_from_timeout()
+    if result is TaskOutcome.FAIL:
+      return self.__construct_from_failure()
+
+  def __combine_xml(self, suites_to_add):
+    """
+    Add new XML test results to existing XML test results
+    """
     testsuites = self.output_xml.getroot()
+    new_suites = suites_to_add.getroot()
     # TODO: update counts for failures, disabled, errors, skipped, etc.
-    for suite_to_add in suites_to_add:
+    for suite_to_add in new_suites:
       for existing_suite in testsuites:
         if suite_to_add.get('name') == existing_suite.get('name'):
           # found: append each test case to main_XML testsuite
           for case in suite_to_add:
-            
             existing_suite.set('tests', str(int(existing_suite.get('tests')) + 1))
             testsuites.set('tests', str(int(testsuites.get('tests')) + 1))
             existing_suite.append(case)
           suite_to_add.clear() # clear out appended suites, sets attribs to None
 
     # add any testsuites that don't match existing to the list of testsuites
-    for suite_to_add in suites_to_add:
+    for suite_to_add in new_suites:
       if suite_to_add.get('name') is not None: 
         testsuites.set('tests', str(int(testsuites.get('tests')) + 1))
         testsuites.append(suite_to_add)
-  
-  def log_xml(self, temp_file, additional_msg):
+
+  def log_xml(self, task, result):
+    """
+    Log a test's result, aggregating it with existing results
+    """
     with self.test_results_lock:
-      if additional_msg is not None: pass # TODO: implement unhappy path
       if self.output_xml is None:
-        # first time reading, just directly copy XML from temp file
-        with open(temp_file, 'r') as log:
-          lines = ''
-          for line in log.readlines():
-            lines += line
-          if lines != '':
-            tree = ET.fromstring(lines)
-            self.output_xml = ET.ElementTree(tree)
+        # first XML file found: just directly copy XML from temp file
+        self.output_xml = self.__generate_new_xml(task, result)
       else:
-        self.__combine_xml(temp_file)
+        new_xml = self.__generate_new_xml(task, result)
+        self.__combine_xml(new_xml)
 
   def dump_to_file_and_close(self):
+    """
+    Dump tests results to the XML file specified at construction
+    """
     if(self.output_xml):
       self.output_xml.write(self.xml_dump_filepath)
 
@@ -364,12 +407,12 @@ class TaskManager(object):
         break
 
     if self.xml_logger:
-      msg = "FAIL"
+      result = TaskOutcome.FAIL
       if task.process_timeout:
-        msg = "TIMEOUT"
+        result = TaskOutcome.TIMEOUT
       elif task.exit_code == 0:
-        msg = "PASS"
-      self.xml_logger.log_xml(task.xml_file, msg)
+        result = TaskOutcome.PASS
+      self.xml_logger.log_xml(task, result)
       # Always remove temporary xml file
       # (these will be aggregated into one file)
       try_remove_file(task.xml_file)
