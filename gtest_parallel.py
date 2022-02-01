@@ -367,21 +367,43 @@ class XMLLogger(object):
     """
     testsuites = self.output_xml.getroot()
     new_suites = suites_to_add.getroot()
-    # TODO: update counts for failures, disabled, errors, skipped, etc.
+
+    def increment_count(element, attrib_name):
+      element.set(attrib_name, str(int(element.get(attrib_name)) + 1))
+
     for suite_to_add in new_suites:
       for existing_suite in testsuites:
         if suite_to_add.get('name') == existing_suite.get('name'):
-          # found: append each test case to main_XML testsuite
+          # found: update element attributes
+          # here we're relying on the fact that suite_to_add will only have one testcase
+          if suite_to_add.get('failures') != '0':
+            increment_count(existing_suite, 'failures')
+            increment_count(testsuites, 'failures')
+          if suite_to_add.get('disabled') != '0':
+            increment_count(existing_suite, 'disabled')
+            increment_count(testsuites, 'disabled')
+          if suite_to_add.get('errors') != '0':
+            increment_count(existing_suite, 'errors')
+            increment_count(testsuites, 'errors')
+          if suite_to_add.get('skipped') != '0':
+            increment_count(existing_suite, 'skipped') # skipped not a member of `testsuites` 
+          # then, append each test case to main_XML testsuite
           for case in suite_to_add:
-            existing_suite.set('tests', str(int(existing_suite.get('tests')) + 1))
-            testsuites.set('tests', str(int(testsuites.get('tests')) + 1))
+            increment_count(existing_suite, 'tests')
+            increment_count(testsuites, 'tests')
             existing_suite.append(case)
           suite_to_add.clear() # clear out appended suites, sets attribs to None
 
     # add any testsuites that don't match existing to the list of testsuites
     for suite_to_add in new_suites:
-      if suite_to_add.get('name') is not None: 
-        testsuites.set('tests', str(int(testsuites.get('tests')) + 1))
+      if suite_to_add.get('name') is not None:
+        increment_count(testsuites, 'tests')
+        if suite_to_add.get('failures') != '0':
+          increment_count(testsuites, 'failures')
+        if suite_to_add.get('disabled') != '0':
+          increment_count(testsuites, 'disabled')
+        if suite_to_add.get('errors') != '0':
+          increment_count(testsuites, 'errors')
         testsuites.append(suite_to_add)
 
   def log_xml(self, task, result):
