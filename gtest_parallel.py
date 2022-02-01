@@ -261,49 +261,6 @@ class TaskOutcome(Enum):
   FAIL = 1
   TIMEOUT = 2
 
-def generate_blank_xml(test_name, runtime_ms):
-  """
-  Generate blank XML for a test matching the GoogleTest XML format, 
-  given the test's name and runtime.
-  """
-  suites_state = {'tests': '1', 
-                  'failures': '0',
-                  'disabled': '0',
-                  'errors': '0',
-                  'name': 'AllTests'}
-  suites = ET.Element('testsuites', suites_state)
-  suite_and_test_name = test_name.split('.')
-  suite_state = {'name': suite_and_test_name[0],
-                 'tests': '1',
-                 'failures': '0',
-                 'disabled': '0',
-                 'skipped': '0',
-                 'errors': '0'}
-  suite = ET.SubElement(suites, 'testsuite', suite_state)
-  test_state = {'name': suite_and_test_name[1],
-                'status': 'run',
-                'time': str(runtime_ms / 1000.0),
-                'classname': suite_and_test_name[0]}
-  test = ET.SubElement(suite, 'testcase', test_state)
-  return ET.ElementTree(suites)
-
-def fetch_test_output(test_name, log_file):
-  output = ""
-  start_pattern = re.compile(".*\[ *RUN *\].*" + test_name)
-  success_pattern = re.compile(".*\[ *OK *\].*" + test_name)
-  failure_pattern = re.compile(".*\[ *FAILED *\].*" + test_name)
-  with open(log_file) as log:
-    for line in log:
-      if start_pattern.search(line.strip()) is not None:
-        break
-    for line in log:
-      stripped = line.strip()
-      if ((success_pattern.search(stripped) is not None) or 
-          (failure_pattern.search(stripped) is not None)):
-        break
-      output += line
-  return output
-
 class XMLLogger(object):
   """
   Aggregates XML data from individual test log files into a single XML file
@@ -312,13 +269,60 @@ class XMLLogger(object):
     self.test_results_lock = threading.Lock()
     self.xml_dump_filepath = xml_dump_filepath
     self.output_xml = None
+
+  def __fetch_test_output(self, test_name, log_file):
+    """
+    Read from a test's log file and return all text after the initial
+    RUN/OK/FAILED preamble
+    """
+    output = ""
+    start_pattern = re.compile(".*\[ *RUN *\].*" + test_name)
+    success_pattern = re.compile(".*\[ *OK *\].*" + test_name)
+    failure_pattern = re.compile(".*\[ *FAILED *\].*" + test_name)
+    with open(log_file) as log:
+      for line in log:
+        if start_pattern.search(line.strip()) is not None:
+          break
+      for line in log:
+        stripped = line.strip()
+        if ((success_pattern.search(stripped) is not None) or 
+            (failure_pattern.search(stripped) is not None)):
+          break
+        output += line
+    return output
+
+  def __generate_blank_xml(self, test_name, runtime_ms):
+    """
+    Generate blank XML for a test matching the GoogleTest XML format, 
+    given the test's name and runtime.
+    """
+    suites_state = {'tests': '1', 
+                    'failures': '0',
+                    'disabled': '0',
+                    'errors': '0',
+                    'name': 'AllTests'}
+    suites = ET.Element('testsuites', suites_state)
+    suite_and_test_name = test_name.split('.')
+    suite_state = {'name': suite_and_test_name[0],
+                  'tests': '1',
+                  'failures': '0',
+                  'disabled': '0',
+                  'skipped': '0',
+                  'errors': '0'}
+    suite = ET.SubElement(suites, 'testsuite', suite_state)
+    test_state = {'name': suite_and_test_name[1],
+                  'status': 'run',
+                  'time': str(runtime_ms / 1000.0),
+                  'classname': suite_and_test_name[0]}
+    test = ET.SubElement(suite, 'testcase', test_state)
+    return ET.ElementTree(suites)
   
   def __construct_from_timeout(self, task):
     """
     Helper: Construct conformant XML from a test that has timed out (and thus hasn't
     produced valid XML on its own)
     """
-    xml = generate_blank_xml(task.test_name, task.runtime_ms)
+    xml = self.__generate_blank_xml(task.test_name, task.runtime_ms)
     root = xml.getroot()
     root.set('failures', '1')
     suite = root.find('testsuite')
@@ -339,13 +343,13 @@ class XMLLogger(object):
     try:
       return ET.parse(task.xml_file)
     except:
-      xml = generate_blank_xml(task.test_name, task.runtime_ms)
+      xml = self.__generate_blank_xml(task.test_name, task.runtime_ms)
       root = xml.getroot()
       root.set('failures', '1')
       suite = root.find('testsuite')
       suite.set('failures', '1')
       case = suite.find('testcase')
-      msg = fetch_test_output(task.test_name, task.log_file)
+      msg = self.__fetch_test_output(task.test_name, task.log_file)
       ET.SubElement(case, 'failure', {'message': msg})
       return xml
 
