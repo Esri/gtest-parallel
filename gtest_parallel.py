@@ -97,6 +97,7 @@ class SigintHandler(object):
     with self.__lock:
       self.__processes.discard(p)
       if self.__timeout:
+        self.__timeout = False
         raise self.ProcessTimeout
       if code in self.sigint_returncodes:
         self.__on_sigint()
