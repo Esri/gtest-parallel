@@ -261,6 +261,32 @@ class TaskOutcome(Enum):
   FAIL = 1
   TIMEOUT = 2
 
+def generate_blank_xml(test_name, runtime_ms):
+  """
+  Generate blank XML for a test matching the GoogleTest XML format, 
+  given the test's name and runtime.
+  """
+  suites_state = {'tests': '1', 
+                  'failures': '0',
+                  'disabled': '0',
+                  'errors': '0',
+                  'name': 'AllTests'}
+  suites = ET.Element('testsuites', suites_state)
+  suite_and_test_name = test_name.split('.')
+  suite_state = {'name': suite_and_test_name[0],
+                 'tests': '1',
+                 'failures': '0',
+                 'disabled': '0',
+                 'skipped': '0',
+                 'errors': '0'}
+  suite = ET.SubElement(suites, 'testsuite', suite_state)
+  test_state = {'name': suite_and_test_name[1],
+                'status': 'run',
+                'time': str(runtime_ms / 1000.0),
+                'classname': suite_and_test_name[0]}
+  test = ET.SubElement(suite, 'testcase', test_state)
+  return ET.ElementTree(suites)
+
 class XMLLogger(object):
   """
   Aggregates XML data from individual test log files into a single XML file
@@ -275,8 +301,17 @@ class XMLLogger(object):
     Helper: Construct conformant XML from a test that has timed out (and thus hasn't
     produced valid XML on its own)
     """
-    # TODO: piece together XML from stdout results
-    pass
+    xml = generate_blank_xml(task.test_name, task.runtime_ms)
+    root = xml.getroot()
+    root.set('failures', '1')
+    suite = root.find('testsuite')
+    suite.set('failures', '1')
+    case = suite.find('testcase')
+    timeout_state = {
+      'message': 'The test timed out after ' + str(task.runtime_ms / 1000.0) + ' seconds'
+    }
+    ET.SubElement(case, 'failure', timeout_state)
+    return xml
 
   def __construct_from_failure(self, task):
     """
@@ -298,9 +333,9 @@ class XMLLogger(object):
     if result is TaskOutcome.PASS: 
       return ET.parse(task.xml_file)
     if result is TaskOutcome.TIMEOUT:
-      return self.__construct_from_timeout()
+      return self.__construct_from_timeout(task)
     if result is TaskOutcome.FAIL:
-      return self.__construct_from_failure()
+      return self.__construct_from_failure(task)
 
   def __combine_xml(self, suites_to_add):
     """
