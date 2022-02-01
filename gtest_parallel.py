@@ -287,6 +287,23 @@ def generate_blank_xml(test_name, runtime_ms):
   test = ET.SubElement(suite, 'testcase', test_state)
   return ET.ElementTree(suites)
 
+def fetch_test_output(test_name, log_file):
+  output = ""
+  start_pattern = re.compile(".*\[ *RUN *\].*" + test_name)
+  success_pattern = re.compile(".*\[ *OK *\].*" + test_name)
+  failure_pattern = re.compile(".*\[ *FAILED *\].*" + test_name)
+  with open(log_file) as log:
+    for line in log:
+      if start_pattern.search(line.strip()) is not None:
+        break
+    for line in log:
+      stripped = line.strip()
+      if ((success_pattern.search(stripped) is not None) or 
+          (failure_pattern.search(stripped) is not None)):
+        break
+      output += line
+  return output
+
 class XMLLogger(object):
   """
   Aggregates XML data from individual test log files into a single XML file
@@ -320,10 +337,17 @@ class XMLLogger(object):
     conformant XML from stdout/stderr output
     """
     try:
-      element = ET.parse(task.xml_file)
-    except: 
-      return None
-      # TODO: piece together XML from stdout results
+      return ET.parse(task.xml_file)
+    except:
+      xml = generate_blank_xml(task.test_name, task.runtime_ms)
+      root = xml.getroot()
+      root.set('failures', '1')
+      suite = root.find('testsuite')
+      suite.set('failures', '1')
+      case = suite.find('testcase')
+      msg = fetch_test_output(task.test_name, task.log_file)
+      ET.SubElement(case, 'failure', {'message': msg})
+      return xml
 
   def __generate_new_xml(self, task, result):
     """
