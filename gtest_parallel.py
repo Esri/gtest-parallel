@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from enum import Enum
 import errno
 from functools import total_ordering
 import gzip
@@ -27,6 +28,7 @@ import sys
 import tempfile
 import threading
 import time
+import xml.etree.ElementTree as ET
 
 if sys.version_info.major >= 3:
     long = int
@@ -95,6 +97,7 @@ class SigintHandler(object):
     with self.__lock:
       self.__processes.discard(p)
       if self.__timeout:
+        self.__timeout = False
         raise self.ProcessTimeout
       if code in self.sigint_returncodes:
         self.__on_sigint()
@@ -176,12 +179,13 @@ class Task(object):
   Additionaly we store the last execution time, so that next time the test is
   executed, the slowest tests are run first.
   """
-  def __init__(self, test_binary, test_name, test_command, execution_number,
+  def __init__(self, test_binary, test_name, test_command, should_log_xml, execution_number,
                last_execution_time, output_dir):
     self.test_name = test_name
     self.output_dir = output_dir
     self.test_binary = test_binary
     self.test_command = test_command
+    self.should_log_xml = should_log_xml
     self.execution_number = execution_number
     self.last_execution_time = last_execution_time
 
@@ -191,9 +195,16 @@ class Task(object):
 
     self.test_id = (test_binary, test_name)
     self.task_id = (test_binary, test_name, self.execution_number)
-
     self.log_file = Task._logname(self.output_dir, self.test_binary,
                                   test_name, self.execution_number)
+    
+    # xml file is located in the same space as the log file,
+    # with the same root name, but a different extension (.xml)
+    self.xml_file = None
+    self.__complete_command = self.test_command[:]
+    if should_log_xml:
+      self.xml_file = os.path.splitext(self.log_file)[0] + '.xml'
+      self.__complete_command += ['--gtest_output=xml:' + os.path.abspath(self.xml_file)]
 
   def __sorting_key(self):
     # Unseen or failing tests (both missing execution time) take precedence over
@@ -232,7 +243,7 @@ class Task(object):
   def run(self, test_timeout):
     begin = time.time()
     with open(self.log_file, 'w') as log:
-      task = subprocess.Popen(self.test_command, stdout=log, stderr=log)
+      task = subprocess.Popen(self.__complete_command, stdout=log, stderr=log)
       try:
         self.exit_code = sigint_handler.wait(task, timeout = test_timeout)
       except sigint_handler.ProcessWasInterrupted:
@@ -243,6 +254,181 @@ class Task(object):
     self.runtime_ms = int(1000 * (time.time() - begin))
     self.last_execution_time = None if self.exit_code else self.runtime_ms
 
+class TaskOutcome(Enum):
+  """
+  Handy enum type used to interpret Task outcomes
+  """
+  PASS = 0
+  FAIL = 1
+  TIMEOUT = 2
+
+class XMLLogger(object):
+  """
+  Aggregates XML data from individual test log files into a single XML file
+  """
+  def __init__(self, xml_dump_filepath):
+    self.test_results_lock = threading.Lock()
+    self.xml_dump_filepath = xml_dump_filepath
+    self.output_xml = None
+
+  def __fetch_test_output(self, test_name, log_file):
+    """
+    Read from a test's log file and return all text after the initial
+    RUN/OK/FAILED preamble
+    """
+    output = ""
+    start_pattern = re.compile(".*\[ *RUN *\].*" + test_name)
+    success_pattern = re.compile(".*\[ *OK *\].*" + test_name)
+    failure_pattern = re.compile(".*\[ *FAILED *\].*" + test_name)
+    with open(log_file) as log:
+      for line in log:
+        if start_pattern.search(line.strip()) is not None:
+          break
+      for line in log:
+        stripped = line.strip()
+        if ((success_pattern.search(stripped) is not None) or 
+            (failure_pattern.search(stripped) is not None)):
+          break
+        output += line
+    return output
+
+  def __generate_blank_xml(self, test_name, runtime_ms):
+    """
+    Generate blank XML for a test matching the GoogleTest XML format, 
+    given the test's name and runtime.
+    """
+    suites_state = {'tests': '1', 
+                    'failures': '0',
+                    'disabled': '0',
+                    'errors': '0',
+                    'name': 'AllTests'}
+    suites = ET.Element('testsuites', suites_state)
+    suite_and_test_name = test_name.split('.')
+    suite_state = {'name': suite_and_test_name[0],
+                  'tests': '1',
+                  'failures': '0',
+                  'disabled': '0',
+                  'skipped': '0',
+                  'errors': '0'}
+    suite = ET.SubElement(suites, 'testsuite', suite_state)
+    test_state = {'name': suite_and_test_name[1],
+                  'status': 'run',
+                  'time': str(runtime_ms / 1000.0),
+                  'classname': suite_and_test_name[0]}
+    test = ET.SubElement(suite, 'testcase', test_state)
+    return ET.ElementTree(suites)
+  
+  def __construct_from_timeout(self, task):
+    """
+    Helper: Construct conformant XML from a test that has timed out (and thus hasn't
+    produced valid XML on its own)
+    """
+    xml = self.__generate_blank_xml(task.test_name, task.runtime_ms)
+    root = xml.getroot()
+    root.set('failures', '1')
+    suite = root.find('testsuite')
+    suite.set('failures', '1')
+    case = suite.find('testcase')
+    timeout_state = {
+      'message': 'The test timed out after ' + str(task.runtime_ms / 1000.0) + ' seconds'
+    }
+    ET.SubElement(case, 'failure', timeout_state)
+    return xml
+
+  def __construct_from_failure(self, task):
+    """
+    Helper: Construct conformant XML from a test that has failed. If the test crashed,
+    it may not have generated valid XML. Handle this case by manually-constructing
+    conformant XML from stdout/stderr output
+    """
+    try:
+      return ET.parse(task.xml_file)
+    except:
+      xml = self.__generate_blank_xml(task.test_name, task.runtime_ms)
+      root = xml.getroot()
+      root.set('failures', '1')
+      suite = root.find('testsuite')
+      suite.set('failures', '1')
+      case = suite.find('testcase')
+      msg = self.__fetch_test_output(task.test_name, task.log_file)
+      ET.SubElement(case, 'failure', {'message': msg})
+      return xml
+
+  def __generate_new_xml(self, task, result):
+    """
+    Helper: Generate valid / conformant XML given a Task and its Result. Handles
+    PASS, TIMEOUT, and FAILURE TaskOutcomes.
+    """
+    if result is TaskOutcome.PASS: 
+      return ET.parse(task.xml_file)
+    if result is TaskOutcome.TIMEOUT:
+      return self.__construct_from_timeout(task)
+    if result is TaskOutcome.FAIL:
+      return self.__construct_from_failure(task)
+
+  def __combine_xml(self, suites_to_add):
+    """
+    Add new XML test results to existing XML test results
+    """
+    testsuites = self.output_xml.getroot()
+    new_suites = suites_to_add.getroot()
+
+    def increment_count(element, attrib_name):
+      element.set(attrib_name, str(int(element.get(attrib_name)) + 1))
+
+    for suite_to_add in new_suites:
+      for existing_suite in testsuites:
+        if suite_to_add.get('name') == existing_suite.get('name'):
+          # found: update element attributes
+          # here we're relying on the fact that suite_to_add will only have one testcase
+          if suite_to_add.get('failures') != '0':
+            increment_count(existing_suite, 'failures')
+            increment_count(testsuites, 'failures')
+          if suite_to_add.get('disabled') != '0':
+            increment_count(existing_suite, 'disabled')
+            increment_count(testsuites, 'disabled')
+          if suite_to_add.get('errors') != '0':
+            increment_count(existing_suite, 'errors')
+            increment_count(testsuites, 'errors')
+          if suite_to_add.get('skipped') != '0':
+            increment_count(existing_suite, 'skipped') # skipped not a member of `testsuites` 
+          # then, append each test case to main_XML testsuite
+          for case in suite_to_add:
+            increment_count(existing_suite, 'tests')
+            increment_count(testsuites, 'tests')
+            existing_suite.append(case)
+          suite_to_add.clear() # clear out appended suites, sets attribs to None
+
+    # add any testsuites that don't match existing to the list of testsuites
+    for suite_to_add in new_suites:
+      if suite_to_add.get('name') is not None:
+        increment_count(testsuites, 'tests')
+        if suite_to_add.get('failures') != '0':
+          increment_count(testsuites, 'failures')
+        if suite_to_add.get('disabled') != '0':
+          increment_count(testsuites, 'disabled')
+        if suite_to_add.get('errors') != '0':
+          increment_count(testsuites, 'errors')
+        testsuites.append(suite_to_add)
+
+  def log_xml(self, task, result):
+    """
+    Log a test's result, aggregating it with existing results
+    """
+    with self.test_results_lock:
+      if self.output_xml is None:
+        # first XML file found: just directly copy XML from temp file
+        self.output_xml = self.__generate_new_xml(task, result)
+      else:
+        new_xml = self.__generate_new_xml(task, result)
+        self.__combine_xml(new_xml)
+
+  def dump_to_file_and_close(self):
+    """
+    Dump tests results to the XML file specified at construction
+    """
+    if(self.output_xml):
+      self.output_xml.write(self.xml_dump_filepath)
 
 class TaskManager(object):
   """Executes the tasks and stores the passed, failed and interrupted tasks.
@@ -252,12 +438,13 @@ class TaskManager(object):
   Logger, TestResults and TestTimes classes, and in case of failure, retries the
   test as specified by the --retry_failed flag.
   """
-  def __init__(self, times, logger, test_results, task_factory, times_to_retry,
+  def __init__(self, times, logger, xml_logger, task_factory, output_dir, times_to_retry,
                initial_execution_number):
     self.times = times
     self.logger = logger
-    self.test_results = test_results
+    self.xml_logger = xml_logger
     self.task_factory = task_factory
+    self.output_dir = output_dir
     self.times_to_retry = times_to_retry
     self.initial_execution_number = initial_execution_number
 
@@ -285,13 +472,40 @@ class TaskManager(object):
     self.logger.log_exit(task)
     self.times.record_test_time(task.test_binary, task.test_name,
                                 task.last_execution_time)
-    if self.test_results:
-      msg = "FAIL"
+
+    def try_remove_file(log):
+      """ Try to remove the file 100 times (sleeping for 0.1 second in between).
+      This is a workaround for a process handle seemingly holding on to the
+      file for too long inside os.subprocess. This workaround is in place
+      until we figure out a minimal repro to report upstream (or a better
+      suspect) to prevent os.remove exceptions."""
+      num_tries = 100
+      for i in range(num_tries):
+        try:
+          os.remove(log)
+        except OSError as e:
+          if e.errno is not errno.ENOENT: 
+            if i is num_tries - 1:
+              self.out.permanent_line('Could not remove temporary log file: ' + str(e))
+            else:
+              time.sleep(0.1)
+            continue
+        break
+
+    if self.xml_logger:
+      result = TaskOutcome.FAIL
       if task.process_timeout:
-        msg = "TIMEOUT"
+        result = TaskOutcome.TIMEOUT
       elif task.exit_code == 0:
-        msg = "PASS"
-      self.test_results.log(task.test_name, task.runtime_ms, msg)
+        result = TaskOutcome.PASS
+      self.xml_logger.log_xml(task, result)
+      # Always remove temporary xml file
+      # (these will be aggregated into one file)
+      try_remove_file(task.xml_file)
+
+    # Only remove log file if output dir not specified
+    if self.output_dir is None:
+      try_remove_file(task.log_file)
 
     with self.lock:
       self.started.pop(task.task_id)
@@ -314,7 +528,7 @@ class TaskManager(object):
         # We need create a new Task instance. Each task represents a single test
         # execution, with its own runtime, exit code and log file.
         task = self.task_factory(task.test_binary, task.test_name,
-                                 task.test_command, execution_number,
+                                 task.test_command, task.should_log_xml, execution_number,
                                  task.last_execution_time, task.output_dir)
 
     with self.lock:
@@ -384,25 +598,6 @@ class FilterFormat(object):
             % (self.finished_tasks, self.total_tasks, task.test_name,
                task.exit_code, task.runtime_ms))
 
-    if self.output_dir is None:
-      # Try to remove the file 100 times (sleeping for 0.1 second in between).
-      # This is a workaround for a process handle seemingly holding on to the
-      # file for too long inside os.subprocess. This workaround is in place
-      # until we figure out a minimal repro to report upstream (or a better
-      # suspect) to prevent os.remove exceptions.
-      num_tries = 100
-      for i in range(num_tries):
-        try:
-          os.remove(task.log_file)
-        except OSError as e:
-          if e.errno is not errno.ENOENT:
-            if i is num_tries - 1:
-              self.out.permanent_line('Could not remove temporary log file: ' + str(e))
-            else:
-              time.sleep(0.1)
-            continue
-        break
-
   def log_tasks(self, total_tasks):
     self.total_tasks += total_tasks
     self.out.transient_line("[0/%d] Running tests..." % self.total_tasks)
@@ -438,47 +633,6 @@ class FilterFormat(object):
 
   def flush(self):
     self.out.flush_transient_output()
-
-
-class CollectTestResults(object):
-  def __init__(self, json_dump_filepath):
-    self.test_results_lock = threading.Lock()
-    self.json_dump_file = open(json_dump_filepath, 'w')
-    self.test_results = {
-        "interrupted": False,
-        "path_delimiter": ".",
-        # Third version of the file format. See the link in the flag description
-        # for details.
-        "version": 3,
-        "seconds_since_epoch": int(time.time()),
-        "num_failures_by_type": {
-            "PASS": 0,
-            "FAIL": 0,
-            "TIMEOUT": 0,
-        },
-        "tests": {},
-    }
-
-  def log(self, test, runtime_ms, actual_result):
-    with self.test_results_lock:
-      self.test_results['num_failures_by_type'][actual_result] += 1
-      results = self.test_results['tests']
-      for name in test.split('.'):
-        results = results.setdefault(name, {})
-
-      if results:
-        results['actual'] += ' ' + actual_result
-        results['times'].append(runtime_ms)
-      else:  # This is the first invocation of the test
-        results['actual'] = actual_result
-        results['times'] = [runtime_ms]
-        results['time'] = runtime_ms
-        results['expected'] = 'PASS'
-
-  def dump_to_file_and_close(self):
-    json.dump(self.test_results, self.json_dump_file)
-    self.json_dump_file.close()
-
 
 # Record of test runtimes. Has built-in locking.
 class TestTimes(object):
@@ -652,9 +806,11 @@ def find_tests(binaries, additional_args, options, times):
         continue
 
       test_command = command + ['--gtest_filter=' + test_name]
+      
+      should_log_xml = options.dump_xml_test_results
       if (test_count - options.shard_index) % options.shard_count == 0:
         for execution_number in range(options.repeat):
-          tasks.append(Task(test_binary, test_name, test_command,
+          tasks.append(Task(test_binary, test_name, test_command, should_log_xml,
                             execution_number + 1, last_execution_time,
                             options.output_dir))
 
@@ -755,10 +911,10 @@ def default_options_parser():
   parser.add_option('--shard_index', type='int', default=0,
                     help='zero-indexed number identifying this shard (for '
                          'sharding test execution between multiple machines)')
-  parser.add_option('--dump_json_test_results', type='string', default=None,
-                    help='Saves the results of the tests as a JSON machine-'
+  parser.add_option('--dump_xml_test_results', type='string', default=None,
+                    help='Saves the results of the tests as an XML machine-'
                          'readable file. The format of the file is specified at '
-                         'https://www.chromium.org/developers/the-json-test-results-format')
+                         'https://github.com/google/googletest/blob/1b18723e874b256c1e39378c6774a90701d70f7a/docs/advanced.md#generating-an-xml-report')
   parser.add_option('--timeout', type='int', default=None,
                     help='Interrupt all remaining processes after the given '
                          'time (in seconds).')
@@ -831,16 +987,16 @@ def main():
   if options.timeout is not None:
     timeout = threading.Timer(options.timeout, sigint_handler.interrupt)
 
-  test_results = None
-  if options.dump_json_test_results is not None:
-    test_results = CollectTestResults(options.dump_json_test_results)
+  xml_logger = None
+  if options.dump_xml_test_results is not None:
+    xml_logger = XMLLogger(options.dump_xml_test_results)
 
   save_file = get_save_file_path()
 
   times = TestTimes(save_file)
   logger = FilterFormat(options.output_dir)
 
-  task_manager = TaskManager(times, logger, test_results, Task,
+  task_manager = TaskManager(times, logger, xml_logger, Task, options.output_dir,
                              options.retry_failed, options.repeat + 1)
 
   tasks = find_tests(binaries, additional_args, options, times)
@@ -869,8 +1025,8 @@ def main():
 
   logger.flush()
   times.write_to_file(save_file)
-  if test_results:
-    test_results.dump_to_file_and_close()
+  if xml_logger:
+    xml_logger.dump_to_file_and_close()
 
   if sigint_handler.got_sigint():
     return -signal.SIGINT
