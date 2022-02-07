@@ -759,8 +759,6 @@ def find_tests(binaries, additional_args, options, times):
       command += ['--gtest_also_run_disabled_tests']
     if options.size != '':
       command += ['--size=' + options.size]
-      print('size filter: ON')
-
 
     list_command = command + ['--gtest_list_tests']
     if options.test != '':
