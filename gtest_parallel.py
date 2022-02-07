@@ -757,14 +757,16 @@ def find_tests(binaries, additional_args, options, times):
     command = [test_binary] + additional_args
     if options.gtest_also_run_disabled_tests:
       command += ['--gtest_also_run_disabled_tests']
+    if options.size != '':
+      command += ['--size=' + options.size]
+      print('size filter: ON')
+
 
     list_command = command + ['--gtest_list_tests']
     if options.test != '':
       list_command += ['--test=' + options.test]
     if options.gtest_filter != '':
       list_command += ['--gtest_filter=' + options.gtest_filter]
-    if options.size != '':
-      list_command += ['--size=' + options.size]
 
     try:
       test_list = subprocess.check_output(list_command,
