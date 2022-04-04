@@ -884,7 +884,7 @@ def default_options_parser():
                          'available under gtest-parallel-logs/, so '
                          '--output_dir=/tmp will results in all logs being '
                          'available under /tmp/gtest-parallel-logs/.')
-  parser.add_option('-r', '--repeat', type='int', default=1,
+  parser.add_option('-r', '--repeat', '--loop', '--gtest_repeat', type='int', default=1,
                     help='Number of times to execute all the tests.')
   parser.add_option('--retry_failed', type='int', default=0,
                     help='Number of times to repeat failed tests.')
