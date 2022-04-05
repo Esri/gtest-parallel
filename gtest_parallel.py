@@ -274,7 +274,7 @@ class XMLLogger(object):
   def __fetch_test_output(self, test_name, log_file):
     """
     Read from a test's log file and return all text after the initial
-    RUN/OK/FAILED preamble
+    RUN preamble and OK / FAILED epilogues, if present
     """
     output = ""
     start_pattern = re.compile(".*\[ *RUN *\].*" + test_name)
@@ -341,18 +341,15 @@ class XMLLogger(object):
     it may not have generated valid XML. Handle this case by manually-constructing
     conformant XML from stdout/stderr output
     """
-    try:
-      return ET.parse(task.xml_file)
-    except:
-      xml = self.__generate_blank_xml(task.test_name, task.runtime_ms)
-      root = xml.getroot()
-      root.set('failures', '1')
-      suite = root.find('testsuite')
-      suite.set('failures', '1')
-      case = suite.find('testcase')
-      msg = self.__fetch_test_output(task.test_name, task.log_file)
-      ET.SubElement(case, 'failure', {'message': msg})
-      return xml
+    xml = self.__generate_blank_xml(task.test_name, task.runtime_ms)
+    root = xml.getroot()
+    root.set('failures', '1')
+    suite = root.find('testsuite')
+    suite.set('failures', '1')
+    case = suite.find('testcase')
+    msg = self.__fetch_test_output(task.test_name, task.log_file)
+    ET.SubElement(case, 'failure', {'message': msg})
+    return xml
 
   def __generate_new_xml(self, task, result):
     """
@@ -498,6 +495,7 @@ class TaskManager(object):
         result = TaskOutcome.TIMEOUT
       elif task.exit_code == 0:
         result = TaskOutcome.PASS
+
       self.xml_logger.log_xml(task, result)
       # Always remove temporary xml file
       # (these will be aggregated into one file)
