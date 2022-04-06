@@ -179,12 +179,20 @@ class Task(object):
   Additionaly we store the last execution time, so that next time the test is
   executed, the slowest tests are run first.
   """
-  def __init__(self, test_binary, test_name, test_command, should_log_xml, execution_number,
-               last_execution_time, output_dir):
+  def __init__(self, 
+               test_binary, 
+               test_name, 
+               test_command,
+               test_timeout,
+               should_log_xml, 
+               execution_number,
+               last_execution_time, 
+               output_dir):
     self.test_name = test_name
     self.output_dir = output_dir
     self.test_binary = test_binary
     self.test_command = test_command
+    self.test_timeout = test_timeout
     self.should_log_xml = should_log_xml
     self.execution_number = execution_number
     self.last_execution_time = last_execution_time
@@ -240,12 +248,12 @@ class Task(object):
 
     return os.path.join(output_dir, log_name)
 
-  def run(self, test_timeout):
+  def run(self):
     begin = time.time()
     with open(self.log_file, 'w') as log:
       task = subprocess.Popen(self.__complete_command, stdout=log, stderr=log)
       try:
-        self.exit_code = sigint_handler.wait(task, timeout = test_timeout)
+        self.exit_code = sigint_handler.wait(task, timeout = self.test_timeout)
       except sigint_handler.ProcessWasInterrupted:
         thread.exit()
       except sigint_handler.ProcessTimeout:
@@ -514,10 +522,10 @@ class TaskManager(object):
       else:
         self.failed.append(task)
 
-  def run_task(self, task, test_timeout):
+  def run_task(self, task):
     for try_number in range(self.times_to_retry + 1):
       self.__register_start(task)
-      task.run(test_timeout)
+      task.run()
       self.__register_exit(task)
 
       if task.exit_code == 0:
@@ -527,9 +535,14 @@ class TaskManager(object):
         execution_number = self.__get_next_execution_number(task.test_id)
         # We need create a new Task instance. Each task represents a single test
         # execution, with its own runtime, exit code and log file.
-        task = self.task_factory(task.test_binary, task.test_name,
-                                 task.test_command, task.should_log_xml, execution_number,
-                                 task.last_execution_time, task.output_dir)
+        task = self.task_factory(task.test_binary, 
+                                 task.test_name,
+                                 task.test_command,
+                                 task.test_timeout,
+                                 task.should_log_xml,
+                                 execution_number,
+                                 task.last_execution_time,
+                                 task.output_dir)
 
     with self.lock:
       if task.exit_code != 0:
@@ -779,6 +792,11 @@ def find_tests(binaries, additional_args, options, times):
         test_list = test_list.decode(sys.stdout.encoding).split('\n')
 
     command += ['--gtest_color=' + options.gtest_color]
+    
+    if options.test_timeout is not None:
+      timeout = int(options.test_timeout)
+    else:
+      timeout = 3600 # one hour, max
 
     test_group = ''
     for line in test_list:
@@ -810,8 +828,13 @@ def find_tests(binaries, additional_args, options, times):
       should_log_xml = options.dump_xml_test_results
       if (test_count - options.shard_index) % options.shard_count == 0:
         for execution_number in range(options.repeat):
-          tasks.append(Task(test_binary, test_name, test_command, should_log_xml,
-                            execution_number + 1, last_execution_time,
+          tasks.append(Task(test_binary, 
+                            test_name,
+                            test_command,
+                            timeout,
+                            should_log_xml,
+                            execution_number + 1,
+                            last_execution_time,
                             options.output_dir))
 
       test_count += 1
@@ -822,7 +845,7 @@ def find_tests(binaries, additional_args, options, times):
 
 
 def execute_tasks(tasks, pool_size, task_manager,
-                  timeout, test_timeout, serialize_test_cases):
+                  timeout, serialize_test_cases):
   class WorkerFn(object):
     def __init__(self, tasks, running_groups):
       self.tasks = tasks
@@ -850,7 +873,7 @@ def execute_tasks(tasks, pool_size, task_manager,
             # cases (groups) is less than number or running threads.
             return
 
-        task_manager.run_task(task, test_timeout)
+        task_manager.run_task(task)
 
         if self.running_groups is not None:
           with self.task_lock:
@@ -1002,7 +1025,7 @@ def main():
   tasks = find_tests(binaries, additional_args, options, times)
   logger.log_tasks(len(tasks))
   execute_tasks(tasks, options.workers, task_manager,
-                timeout, options.test_timeout, options.serialize_test_cases)
+                timeout, options.serialize_test_cases)
 
   print_try_number = options.retry_failed > 0 or options.repeat > 1
   if task_manager.passed:
