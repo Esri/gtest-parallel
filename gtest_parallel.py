@@ -837,22 +837,18 @@ def find_tests(binaries, additional_args, options, times):
       
       test_command = command + ['--gtest_filter=' + test_name]
 
-      # respect per-test timeout if manually set by user. otherwise:
+      # enforce timeout based on test size:
       # - if in S, append timeout = 60s
       # - if in M, append timeout = 300s
       # - if in L, append timeout = 900s
       # - if in X, append timeout = 3600s
-      if options.test_timeout is not None:
-        timeout = int(options.test_timeout)
-      else:
-        if test_name in test_sizes['s']:
-          timeout = 60
-        elif test_name in test_sizes['m']:
-          timeout = 300
-        elif test_name in test_sizes['l']:
-          timeout = 900
-        else:
-          timeout = 3600
+      timeout = 60 
+      if test_name in test_sizes['m']:
+        timeout = 300
+      elif test_name in test_sizes['l']:
+        timeout = 900
+      elif test_name in test_sizes['x']:
+        timeout = 3600
 
       last_execution_time = times.get_test_time(test_binary, test_name)
       if options.failed and last_execution_time is not None:
@@ -974,8 +970,6 @@ def default_options_parser():
   parser.add_option('--timeout', type='int', default=None,
                     help='Interrupt all remaining processes after the given '
                          'time (in seconds).')
-  parser.add_option('--test_timeout', type='int', default=None,
-                    help='Interrupt each test after the given time (in seconds).')
   parser.add_option('--serialize_test_cases', action='store_true',
                     default=False, help='Do not run tests from the same test '
                                         'case in parallel.')
