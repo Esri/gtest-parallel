@@ -179,12 +179,20 @@ class Task(object):
   Additionaly we store the last execution time, so that next time the test is
   executed, the slowest tests are run first.
   """
-  def __init__(self, test_binary, test_name, test_command, should_log_xml, execution_number,
-               last_execution_time, output_dir):
+  def __init__(self, 
+               test_binary, 
+               test_name, 
+               test_command,
+               test_timeout,
+               should_log_xml, 
+               execution_number,
+               last_execution_time, 
+               output_dir):
     self.test_name = test_name
     self.output_dir = output_dir
     self.test_binary = test_binary
     self.test_command = test_command
+    self.test_timeout = test_timeout
     self.should_log_xml = should_log_xml
     self.execution_number = execution_number
     self.last_execution_time = last_execution_time
@@ -240,12 +248,12 @@ class Task(object):
 
     return os.path.join(output_dir, log_name)
 
-  def run(self, test_timeout):
+  def run(self):
     begin = time.time()
     with open(self.log_file, 'w') as log:
       task = subprocess.Popen(self.__complete_command, stdout=log, stderr=log)
       try:
-        self.exit_code = sigint_handler.wait(task, timeout = test_timeout)
+        self.exit_code = sigint_handler.wait(task, timeout = self.test_timeout)
       except sigint_handler.ProcessWasInterrupted:
         thread.exit()
       except sigint_handler.ProcessTimeout:
@@ -524,10 +532,10 @@ class TaskManager(object):
       else:
         self.failed.append(task)
 
-  def run_task(self, task, test_timeout):
+  def run_task(self, task):
     for try_number in range(self.times_to_retry + 1):
       self.__register_start(task)
-      task.run(test_timeout)
+      task.run()
       self.__register_exit(task)
 
       if task.exit_code == 0:
@@ -537,9 +545,14 @@ class TaskManager(object):
         execution_number = self.__get_next_execution_number(task.test_id)
         # We need create a new Task instance. Each task represents a single test
         # execution, with its own runtime, exit code and log file.
-        task = self.task_factory(task.test_binary, task.test_name,
-                                 task.test_command, task.should_log_xml, execution_number,
-                                 task.last_execution_time, task.output_dir)
+        task = self.task_factory(task.test_binary, 
+                                 task.test_name,
+                                 task.test_command,
+                                 task.test_timeout,
+                                 task.should_log_xml,
+                                 execution_number,
+                                 task.last_execution_time,
+                                 task.output_dir)
 
     with self.lock:
       if task.exit_code != 0:
@@ -760,10 +773,61 @@ class TestTimes(object):
       return times
 
 
+def parse_test_names(test_binary, list_command, run_disabled_tests):
+
+  try:
+    test_list = subprocess.check_output(list_command,
+                                        stderr=subprocess.STDOUT)
+  except subprocess.CalledProcessError as e:
+    sys.exit("%s: %s\n%s" % (test_binary, str(e), e.output))
+
+  try:
+      test_list = test_list.split('\n')
+  except TypeError:
+      # subprocess.check_output() returns bytes in python3
+      test_list = test_list.decode(sys.stdout.encoding).split('\n')
+
+  tests = []
+  test_group = ''
+
+  for line in test_list:
+    if not line.strip():
+      continue
+    if line[0] != " ":
+      # Remove comments for typed tests and strip whitespace.
+      test_group = line.split('#')[0].strip()
+      continue
+    # Remove comments for parameterized tests and strip whitespace.
+    line = line.split('#')[0].strip()
+    if not line:
+      continue
+
+    test_name = test_group + line
+    if not run_disabled_tests and 'DISABLED_' in test_name:
+      continue
+
+    # Skip PRE_ tests which are used by Chromium.
+    if '.PRE_' in test_name :
+      continue
+    
+    tests.append(test_name)
+
+  return tests
+
 def find_tests(binaries, additional_args, options, times):
   test_count = 0
   tasks = []
+
   for test_binary in binaries:
+
+    # build dict of test size -> test names for each binary
+    test_sizes_command = [test_binary] + additional_args
+    test_sizes = {'s': [], 'm': [], 'l':[], 'x': []}
+    for size in test_sizes.keys():
+      test_sizes_command += ['--size=' + size]
+      test_sizes_command += ['--gtest_list_tests']
+      test_sizes[size] = parse_test_names(test_binary, test_sizes_command, options.gtest_also_run_disabled_tests)
+
     command = [test_binary] + additional_args
     if options.gtest_also_run_disabled_tests:
       command += ['--gtest_also_run_disabled_tests']
@@ -776,52 +840,40 @@ def find_tests(binaries, additional_args, options, times):
     if options.gtest_filter != '':
       list_command += ['--gtest_filter=' + options.gtest_filter]
 
-    try:
-      test_list = subprocess.check_output(list_command,
-                                          stderr=subprocess.STDOUT)
-    except subprocess.CalledProcessError as e:
-      sys.exit("%s: %s\n%s" % (test_binary, str(e), e.output))
-
-    try:
-        test_list = test_list.split('\n')
-    except TypeError:
-        # subprocess.check_output() returns bytes in python3
-        test_list = test_list.decode(sys.stdout.encoding).split('\n')
-
     command += ['--gtest_color=' + options.gtest_color]
+    
+    test_names = parse_test_names(test_binary, list_command, options.gtest_also_run_disabled_tests)
+    for test_name in test_names:
+      
+      test_command = command + ['--gtest_filter=' + test_name]
 
-    test_group = ''
-    for line in test_list:
-      if not line.strip():
-        continue
-      if line[0] != " ":
-        # Remove comments for typed tests and strip whitespace.
-        test_group = line.split('#')[0].strip()
-        continue
-      # Remove comments for parameterized tests and strip whitespace.
-      line = line.split('#')[0].strip()
-      if not line:
-        continue
-
-      test_name = test_group + line
-      if not options.gtest_also_run_disabled_tests and 'DISABLED_' in test_name:
-        continue
-
-      # Skip PRE_ tests which are used by Chromium.
-      if '.PRE_' in test_name :
-        continue
+      # enforce timeout based on test size:
+      # - if in S, append timeout = 60s
+      # - if in M, append timeout = 300s
+      # - if in L, append timeout = 900s
+      # - if in X, append timeout = 3600s
+      timeout = 60 
+      if test_name in test_sizes['m']:
+        timeout = 300
+      elif test_name in test_sizes['l']:
+        timeout = 900
+      elif test_name in test_sizes['x']:
+        timeout = 3600
 
       last_execution_time = times.get_test_time(test_binary, test_name)
       if options.failed and last_execution_time is not None:
         continue
-
-      test_command = command + ['--gtest_filter=' + test_name]
       
       should_log_xml = options.dump_xml_test_results
       if (test_count - options.shard_index) % options.shard_count == 0:
         for execution_number in range(options.repeat):
-          tasks.append(Task(test_binary, test_name, test_command, should_log_xml,
-                            execution_number + 1, last_execution_time,
+          tasks.append(Task(test_binary, 
+                            test_name,
+                            test_command,
+                            timeout,
+                            should_log_xml,
+                            execution_number + 1,
+                            last_execution_time,
                             options.output_dir))
 
       test_count += 1
@@ -832,7 +884,7 @@ def find_tests(binaries, additional_args, options, times):
 
 
 def execute_tasks(tasks, pool_size, task_manager,
-                  timeout, test_timeout, serialize_test_cases):
+                  timeout, serialize_test_cases):
   class WorkerFn(object):
     def __init__(self, tasks, running_groups):
       self.tasks = tasks
@@ -860,7 +912,7 @@ def execute_tasks(tasks, pool_size, task_manager,
             # cases (groups) is less than number or running threads.
             return
 
-        task_manager.run_task(task, test_timeout)
+        task_manager.run_task(task)
 
         if self.running_groups is not None:
           with self.task_lock:
@@ -928,8 +980,6 @@ def default_options_parser():
   parser.add_option('--timeout', type='int', default=None,
                     help='Interrupt all remaining processes after the given '
                          'time (in seconds).')
-  parser.add_option('--test_timeout', type='int', default=None,
-                    help='Interrupt each test after the given time (in seconds).')
   parser.add_option('--serialize_test_cases', action='store_true',
                     default=False, help='Do not run tests from the same test '
                                         'case in parallel.')
@@ -1012,7 +1062,7 @@ def main():
   tasks = find_tests(binaries, additional_args, options, times)
   logger.log_tasks(len(tasks))
   execute_tasks(tasks, options.workers, task_manager,
-                timeout, options.test_timeout, options.serialize_test_cases)
+                timeout, options.serialize_test_cases)
 
   print_try_number = options.retry_failed > 0 or options.repeat > 1
   if task_manager.passed:
