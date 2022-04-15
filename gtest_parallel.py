@@ -55,56 +55,56 @@ else:
 # return the result. Once a SIGINT has been seen (in the main process
 # or a subprocess, including the one the current call is waiting for),
 # wait(p) will call p.terminate() and raise ProcessWasInterrupted.
-class SigintHandler(object):
-  class ProcessWasInterrupted(Exception): pass
-  class ProcessTimeout(Exception): pass
-  sigint_returncodes = {-signal.SIGINT,  # Unix
-                        -1073741510,     # Windows
-                        }
-  def __init__(self):
-    self.__lock = threading.Lock()
-    self.__processes = set()
-    self.__got_sigint = False
-    self.__timeout = False
-    signal.signal(signal.SIGINT, lambda signal_num, frame: self.interrupt())
-  def __on_sigint(self):
-    if not self.__timeout:
-      self.__got_sigint = True
-      while self.__processes:
-        try:
-          self.__processes.pop().terminate()
-        except OSError:
-          pass
-  def interrupt(self):
-    with self.__lock:
-      self.__on_sigint()
-  def got_sigint(self):
-    with self.__lock:
-      return self.__got_sigint
-  def wait(self, p, timeout=None):
-    with self.__lock:
-      if self.__got_sigint:
-        p.terminate()
-      self.__processes.add(p)
-    try:
-      code = p.wait(timeout=timeout)
-    except (subprocess.TimeoutExpired):
-      with self.__lock:
-        self.__timeout = True
-        p.terminate()
-      pass
-
-    with self.__lock:
-      self.__processes.discard(p)
-      if self.__timeout:
-        self.__timeout = False
-        raise self.ProcessTimeout
-      if code in self.sigint_returncodes:
-        self.__on_sigint()
-      if self.__got_sigint:
-        raise self.ProcessWasInterrupted
-    return code
-sigint_handler = SigintHandler()
+#class SigintHandler(object):
+#  class ProcessWasInterrupted(Exception): pass
+#  class ProcessTimeout(Exception): pass
+#  sigint_returncodes = {-signal.SIGINT,  # Unix
+#                        -1073741510,     # Windows
+#                        }
+#  def __init__(self):
+#    self.__lock = threading.Lock()
+#    self.__processes = set()
+#    self.__got_sigint = False
+#    self.__timeout = False
+#    signal.signal(signal.SIGINT, lambda signal_num, frame: self.interrupt())
+#  def __on_sigint(self):
+#    if not self.__timeout:
+#      self.__got_sigint = True
+#      while self.__processes:
+#        try:
+#          self.__processes.pop().terminate()
+#        except OSError:
+#          pass
+#  def interrupt(self):
+#    with self.__lock:
+#      self.__on_sigint()
+#  def got_sigint(self):
+#    with self.__lock:
+#      return self.__got_sigint
+#  def wait(self, p, timeout=None):
+#    with self.__lock:
+#      if self.__got_sigint:
+#        p.terminate()
+#      self.__processes.add(p)
+#    try:
+#      code = p.wait(timeout=timeout)
+#    except (subprocess.TimeoutExpired):
+#      with self.__lock:
+#        self.__timeout = True
+#        p.terminate()
+#      pass
+#
+#    with self.__lock:
+#      self.__processes.discard(p)
+#      if self.__timeout:
+#        self.__timeout = False
+#        raise self.ProcessTimeout
+#      if code in self.sigint_returncodes:
+#        self.__on_sigint()
+#      if self.__got_sigint:
+#        raise self.ProcessWasInterrupted
+#    return code
+#sigint_handler = SigintHandler()
 
 
 # Return the width of the terminal, or None if it couldn't be
@@ -251,14 +251,21 @@ class Task(object):
   def run(self):
     begin = time.time()
     with open(self.log_file, 'w') as log:
-      task = subprocess.Popen(self.__complete_command, stdout=log, stderr=log)
-      try:
-        self.exit_code = sigint_handler.wait(task, timeout = self.test_timeout)
-      except sigint_handler.ProcessWasInterrupted:
-        thread.exit()
-      except sigint_handler.ProcessTimeout:
-        self.process_timeout = True
-        pass
+       try:
+         task = subprocess.run(self.__complete_command, stdout = log, stderr = log, timeout = self.test_timeout)
+       except subprocess.TimeoutExpired:
+         self.process_timeout = True
+       self.exit_code = task.returncode
+       if(self.exit_code != 0):
+         print('UNUSUAL EXIT CODE: ' + str(self.exit_code))
+#      task = subprocess.Popen(self.__complete_command, stdout=log, stderr=log)
+#      try:
+#        self.exit_code = sigint_handler.wait(task, timeout = self.test_timeout)
+#      except sigint_handler.ProcessWasInterrupted:
+#        thread.exit()
+#      except sigint_handler.ProcessTimeout:
+#        self.process_timeout = True
+#        pass
     self.runtime_ms = int(1000 * (time.time() - begin))
     self.last_execution_time = None if self.exit_code else self.runtime_ms
 
@@ -1043,9 +1050,9 @@ def main():
       if e.errno != errno.EEXIST or not os.path.isdir(options.output_dir):
         raise e
 
-  timeout = None
-  if options.timeout is not None:
-    timeout = threading.Timer(options.timeout, sigint_handler.interrupt)
+#  timeout = None
+#  if options.timeout is not None:
+#    timeout = threading.Timer(options.timeout, sigint_handler.interrupt)
 
   xml_logger = None
   if options.dump_xml_test_results is not None:
@@ -1062,7 +1069,7 @@ def main():
   tasks = find_tests(binaries, additional_args, options, times)
   logger.log_tasks(len(tasks))
   execute_tasks(tasks, options.workers, task_manager,
-                timeout, options.serialize_test_cases)
+                None, options.serialize_test_cases)
 
   print_try_number = options.retry_failed > 0 or options.repeat > 1
   if task_manager.passed:
@@ -1088,8 +1095,8 @@ def main():
   if xml_logger:
     xml_logger.dump_to_file_and_close()
 
-  if sigint_handler.got_sigint():
-    return -signal.SIGINT
+#  if sigint_handler.got_sigint():
+#    return -signal.SIGINT
 
   return task_manager.global_exit_code
 
