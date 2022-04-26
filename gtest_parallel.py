@@ -350,7 +350,8 @@ class XMLLogger(object):
     suite.set('failures', '1')
     case = suite.find('testcase')
     timeout_state = {
-      'message': 'The test timed out after ' + str(task.runtime_ms / 1000.0) + ' seconds'
+      'message': 'The test timed out after ' + str(task.runtime_ms / 1000.0) + ' seconds\n\n'
+      + self.__fetch_test_output(task.test_name, task.log_file)
     }
     ET.SubElement(case, 'failure', timeout_state)
     return xml
