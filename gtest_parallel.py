@@ -81,6 +81,13 @@ class SigintHandler(object):
   def got_sigint(self):
     with self.__lock:
       return self.__got_sigint
+  def __terminate(self, p):
+    if sys.platform == 'win32':
+      #On Windows, SIGTERM terminates the subprocess without allowing the signal handler to execute.
+      #So we use a non-terminal signal instead.
+      p.send_signal(signal.CTRL_BREAK_EVENT)
+    else:
+      p.terminate()
   def wait(self, p, timeout=None):
     with self.__lock:
       if self.__got_sigint:
@@ -91,7 +98,8 @@ class SigintHandler(object):
     except (subprocess.TimeoutExpired):
       with self.__lock:
         self.__timeout = True
-        p.terminate()
+        self.__terminate(p)
+        p.wait() #wait for signal to be handled in subprocess
       pass
 
     with self.__lock:
@@ -251,7 +259,11 @@ class Task(object):
   def run(self):
     begin = time.time()
     with open(self.log_file, 'w') as log:
-      task = subprocess.Popen(self.__complete_command, stdout=log, stderr=log)
+      if sys.platform == 'win32':
+        #Windows requires CREATE_NEW_PROCESS_GROUP to allow the CTRL_BREAK_EVENT signal to be sent
+        task = subprocess.Popen(self.__complete_command, stdout=log, stderr=log, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+      else:
+        task = subprocess.Popen(self.__complete_command, stdout=log, stderr=log)
       try:
         self.exit_code = sigint_handler.wait(task, timeout = self.test_timeout)
       except sigint_handler.ProcessWasInterrupted:
