@@ -949,10 +949,39 @@ def execute_tasks(tasks, pool_size, task_manager,
     if timeout:
       timeout.cancel()
 
+class PassThroughOptionParser(optparse.OptionParser):
+    """
+    An unknown option pass-through implementation of OptionParser.
+
+    When unknown arguments are encountered, bundle with largs and try again,
+    until rargs is depleted.
+
+    The extra options can be retrieved by calling extra_args() after
+    calling parse_args()
+
+    sys.exit(status) will still be called if a known argument is passed
+    incorrectly (e.g. missing arguments or bad argument types, etc.)        
+    """
+    def _init_parsing_state(self):
+        # These are set in parse_args() for the convenience of callbacks.
+        self.eargs = None
+
+    def _process_args(self, largs, rargs, values):
+        self.eargs = []
+        copy_args = rargs.copy()
+
+        while rargs:
+            try:
+                optparse.OptionParser._process_args(self, largs, rargs, values)
+            except (optparse.BadOptionError,optparse.AmbiguousOptionError) as err:
+                self.eargs.append([s for s in copy_args if err.opt_str in s])
+
+    def extra_args(self):
+        return self.eargs
 
 def default_options_parser():
-  parser = optparse.OptionParser(
-      usage = 'usage: %prog [options] binary [binary ...] -- [additional args]')
+  parser = PassThroughOptionParser(
+      usage = 'usage: %prog [options] binary [binary ...] [additional args]')
 
   parser.add_option('-d', '--output_dir', type='string', default=None,
                     help='Output directory for test logs. Logs will be '
@@ -1000,17 +1029,13 @@ def default_options_parser():
 
 
 def main():
-  # Remove additional arguments (anything after --).
-  additional_args = []
-
-  for i in range(len(sys.argv)):
-    if sys.argv[i] == '--':
-      additional_args = sys.argv[i+1:]
-      sys.argv = sys.argv[:i]
-      break
+  # remove --
+  # Extra arguments will be handled by custom optparse.OptionParser
+  if '--' in sys.argv: sys.argv.remove('--')
 
   parser = default_options_parser()
   (options, binaries) = parser.parse_args()
+  additional_args = parser.extra_args()
 
   if (options.output_dir is not None and
       not os.path.isdir(options.output_dir)):
