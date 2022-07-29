@@ -974,7 +974,11 @@ class PassThroughOptionParser(optparse.OptionParser):
             try:
                 optparse.OptionParser._process_args(self, largs, rargs, values)
             except (optparse.BadOptionError,optparse.AmbiguousOptionError) as err:
-                self.eargs.append([s for s in copy_args if err.opt_str in s])
+                eargs =  [s for s in copy_args if err.opt_str in s][0]
+                self.eargs.append(eargs)
+                # Skip the next arg if the current arg has an `=`
+                if rargs and "=" in eargs:
+                    del rargs[0]
 
     def extra_args(self):
         return self.eargs
@@ -1036,6 +1040,9 @@ def main():
   parser = default_options_parser()
   (options, binaries) = parser.parse_args()
   additional_args = parser.extra_args()
+
+  if len(binaries) > 1:
+    parser.error('Unknown value for binary, current value is "%s"' % binaries)
 
   if (options.output_dir is not None and
       not os.path.isdir(options.output_dir)):
