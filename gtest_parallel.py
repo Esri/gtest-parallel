@@ -1023,7 +1023,7 @@ def default_options_parser():
                     help='Saves the results of the tests as an XML machine-'
                          'readable file. The format of the file is specified at '
                          'https://github.com/google/googletest/blob/1b18723e874b256c1e39378c6774a90701d70f7a/docs/advanced.md#generating-an-xml-report')
-  parser.add_option('--timeout', type='int', default=None,
+  parser.add_option('--global_timeout', type='int', default=None,
                     help='Interrupt all remaining processes after the given '
                          'time (in seconds).')
   parser.add_option('--serialize_test_cases', action='store_true',
@@ -1089,8 +1089,8 @@ def main():
         raise e
 
   timeout = None
-  if options.timeout is not None:
-    timeout = threading.Timer(options.timeout, sigint_handler.interrupt)
+  if options.global_timeout is not None:
+    timeout = threading.Timer(options.global_timeout, sigint_handler.interrupt)
 
   xml_logger = None
   if options.dump_xml_test_results is not None:
