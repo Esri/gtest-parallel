@@ -256,7 +256,7 @@ class Task(object):
 
     return os.path.join(output_dir, log_name)
 
-  def run(self, log_to_stdout):
+  def run(self, suppress_individual_test_output):
     begin = time.time()
     with open(self.log_file, 'w') as log:
       if sys.platform == 'win32':
@@ -273,7 +273,7 @@ class Task(object):
         pass
     self.runtime_ms = int(1000 * (time.time() - begin))
     self.last_execution_time = None if self.exit_code else self.runtime_ms
-    if(log_to_stdout == 'yes'):
+    if(not suppress_individual_test_output):
       with open(self.log_file, 'r') as log_file:
         sys.stdout.write(log_file.read())
 
@@ -548,10 +548,10 @@ class TaskManager(object):
       else:
         self.failed.append(task)
 
-  def run_task(self, task, log_to_stdout):
+  def run_task(self, task, suppress_individual_test_output):
     for try_number in range(self.times_to_retry + 1):
       self.__register_start(task)
-      task.run(log_to_stdout)
+      task.run(suppress_individual_test_output)
       self.__register_exit(task)
 
       if task.exit_code == 0:
@@ -900,7 +900,7 @@ def find_tests(binaries, additional_args, options, times):
 
 
 def execute_tasks(tasks, pool_size, task_manager,
-                  timeout, serialize_test_cases, log_to_stdout):
+                  timeout, serialize_test_cases, suppress_individual_test_output):
   class WorkerFn(object):
     def __init__(self, tasks, running_groups):
       self.tasks = tasks
@@ -928,7 +928,7 @@ def execute_tasks(tasks, pool_size, task_manager,
             # cases (groups) is less than number or running threads.
             return
 
-        task_manager.run_task(task,log_to_stdout)
+        task_manager.run_task(task, suppress_individual_test_output)
 
         if self.running_groups is not None:
           with self.task_lock:
@@ -1032,10 +1032,9 @@ def default_options_parser():
   parser.add_option('--serialize_test_cases', action='store_true',
                     default=False, help='Do not run tests from the same test '
                                         'case in parallel.')
-  parser.add_option('--log_to_stdout',
-                    choices=['yes', 'no'],
-                    default='yes',
-                    help='Print individual test output to stdout')
+  parser.add_option('--suppress_individual_test_output',
+                    action='store_true',
+                    help='Do not print individual test output')
   return parser
 
 
@@ -1114,7 +1113,7 @@ def main():
   tasks = find_tests(binaries, additional_args, options, times)
   logger.log_tasks(len(tasks))
   execute_tasks(tasks, options.workers, task_manager,
-                timeout, options.serialize_test_cases, options.log_to_stdout)
+                timeout, options.serialize_test_cases, options.suppress_individual_test_output)
 
   print_try_number = options.retry_failed > 0 or options.repeat > 1
   if task_manager.passed:
