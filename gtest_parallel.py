@@ -861,7 +861,10 @@ def find_tests(binaries, additional_args, options, times):
     test_names = parse_test_names(test_binary, list_command, options.gtest_also_run_disabled_tests)
     for test_name in test_names:
       
-      test_command = command + ['--gtest_filter=' + test_name]
+      if options.test != '':
+        test_command = command + ['--test=' + test_name]
+      if options.gtest_filter != '':
+        test_command = command + ['--gtest_filter=' + test_name]
 
       # enforce timeout based on test size:
       # - if in S, append timeout = 60s
