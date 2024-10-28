@@ -301,12 +301,12 @@ class XMLLogger(object):
     add useful information in this case
     """
     output = ""
-    start_pattern = re.compile(".*\[ *RUN *\].*" + test_name)
-    success_pattern = re.compile(".*\[ *OK *\].*" + test_name)
-    passed_pattern = re.compile("\[ *PASSED *\]")
-    failure_pattern = re.compile("\[ *FAILED *\]")
-    size_pattern = re.compile("\[ *SIZE *\]")
-    status_pattern = re.compile(".*\[(=*|-*)\].*") # brackets with = or - symbols
+    start_pattern = re.compile(r".*\[ *RUN *\].*" + test_name)
+    success_pattern = re.compile(r".*\[ *OK *\].*" + test_name)
+    passed_pattern = re.compile(r"\[ *PASSED *\]")
+    failure_pattern = re.compile(r"\[ *FAILED *\]")
+    size_pattern = re.compile(r"\[ *SIZE *\]")
+    status_pattern = re.compile(r".*\[(=*|-*)\].*") # brackets with = or - symbols
     summary_pattern = re.compile("[0-9]+ FAILED TEST")
 
     with open(log_file) as log:
