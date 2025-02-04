@@ -864,16 +864,16 @@ def find_tests(binaries, additional_args, options, times):
 
       # enforce timeout based on test size:
       # - if in S, append timeout = 60s
-      # - if in M, append timeout = 300s
-      # - if in L, append timeout = 900s
-      # - if in X, append timeout = 3600s
-      timeout = 60 
+      # - if in M, append timeout = 120s
+      # - if in L, append timeout = 300s
+      # - if in X, append timeout = 600s
+      timeout = 60
       if test_name in test_sizes['m']:
-        timeout = 300
+        timeout = 120
       elif test_name in test_sizes['l']:
-        timeout = 900
+        timeout = 300
       elif test_name in test_sizes['x']:
-        timeout = 3600
+        timeout = 600
 
       last_execution_time = times.get_test_time(test_binary, test_name)
       if options.failed and last_execution_time is not None:
