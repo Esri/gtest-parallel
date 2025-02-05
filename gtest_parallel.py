@@ -837,9 +837,9 @@ def find_tests(binaries, additional_args, options, times):
   for test_binary in binaries:
 
     # build dict of test size -> test names for each binary
-    test_sizes_command = [test_binary] + additional_args
     test_sizes = {'s': [], 'm': [], 'l':[], 'x': []}
     for size in test_sizes.keys():
+      test_sizes_command = [test_binary] + additional_args
       test_sizes_command += ['--size=' + size]
       test_sizes_command += ['--gtest_list_tests']
       test_sizes[size] = parse_test_names(test_binary, test_sizes_command, options.gtest_also_run_disabled_tests)
