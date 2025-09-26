@@ -851,8 +851,8 @@ def find_tests(binaries, additional_args, options, times):
       command += ['--size=' + options.size]
 
     list_command = command + ['--gtest_list_tests']
-    if options.test != '':
-      list_command += ['--test=' + options.test]
+    for test in options.test:
+      list_command += ['--test=' + test]
     if options.gtest_filter != '':
       list_command += ['--gtest_filter=' + options.gtest_filter]
 
@@ -1007,7 +1007,7 @@ def default_options_parser():
                     help='color output')
   parser.add_option('--gtest_filter', type='string', default='',
                     help='test filter')
-  parser.add_option('--test', type='string', default='',
+  parser.add_option('--test', action='append', type='string', default=[],
                     help='select a specific test or tests to run')
   parser.add_option('--size', type='string', default='', 
                     help='select a test size (S, M, L, XL, *) to run')
