@@ -1034,6 +1034,8 @@ def default_options_parser():
   parser.add_option('--suppress_individual_test_output',
                     action='store_true',
                     help='Do not print individual test output')
+  parser.add_option('--run_all_supported_graphics_api',
+                    action='store_true', default=False, help='Runs the tests for all the supported graphics_api the current platforms supports. Currently only used to run vulkan and ogl for Linux')
   return parser
 
 
@@ -1054,89 +1056,106 @@ def main():
     parser.error('--output_dir value must be an existing directory, '
                  'current value is "%s"' % options.output_dir)
 
-  # Append gtest-parallel-logs to log output, this is to avoid deleting user
-  # data if an user passes a directory where files are already present. If a
-  # user specifies --output_dir=Docs/, we'll create Docs/gtest-parallel-logs
-  # and clean that directory out on startup, instead of nuking Docs/.
-  if options.output_dir:
-    options.output_dir = os.path.join(options.output_dir,
-                                      'gtest-parallel-logs')
+  # hardcoded stuff to make quick debug
+  apis_names = ["metal", "metal"] # imagine second is ogl, but not using because not supported now on mac (i m debugging on mac at the moment)
+  apis_directories = ["metal", "ogl"]
+  options.run_all_supported_graphics_api = True
 
-  if binaries == []:
-    parser.print_usage()
-    sys.exit(1)
+  original_output_dir = options.output_dir
+  original_dump_xml_test_results = options.dump_xml_test_results
+  # run the tests as many times as multiple graphics api are requested
+  for idx in range(len(apis_names)):
+    # Append gtest-parallel-logs to log output, this is to avoid deleting user
+    # data if an user passes a directory where files are already present. If a
+    # user specifies --output_dir=Docs/, we'll create Docs/gtest-parallel-logs
+    # and clean that directory out on startup, instead of nuking Docs/.
+    if options.output_dir:
+      # create mulitiple directories to store the xmls.
+      if options.run_all_supported_graphics_api:
+        options.output_dir = os.path.join(original_output_dir, apis_directories[idx])
+      options.output_dir = os.path.join(options.output_dir,
+                                        'gtest-parallel-logs')
 
-  if options.shard_count < 1:
-    parser.error("Invalid number of shards: %d. Must be at least 1." %
-                 options.shard_count)
-  if not (0 <= options.shard_index < options.shard_count):
-    parser.error("Invalid shard index: %d. Must be between 0 and %d "
-                 "(less than the number of shards)." %
-                 (options.shard_index, options.shard_count - 1))
+    if binaries == []:
+      parser.print_usage()
+      sys.exit(1)
 
-  # Check that all test binaries have an unique basename. That way we can ensure
-  # the logs are saved to unique files even when two different binaries have
-  # common tests.
-  unique_binaries = set(os.path.basename(binary) for binary in binaries)
-  assert len(unique_binaries) == len(binaries), (
-      "All test binaries must have an unique basename.")
+    if options.shard_count < 1:
+      parser.error("Invalid number of shards: %d. Must be at least 1." %
+                  options.shard_count)
+    if not (0 <= options.shard_index < options.shard_count):
+      parser.error("Invalid shard index: %d. Must be between 0 and %d "
+                  "(less than the number of shards)." %
+                  (options.shard_index, options.shard_count - 1))
 
-  if options.output_dir:
-    # Remove files from old test runs.
-    if os.path.isdir(options.output_dir):
-      shutil.rmtree(options.output_dir)
-    # Create directory for test log output.
-    try:
-      os.makedirs(options.output_dir)
-    except OSError as e:
-      # Ignore errors if this directory already exists.
-      if e.errno != errno.EEXIST or not os.path.isdir(options.output_dir):
-        raise e
+    # Check that all test binaries have an unique basename. That way we can ensure
+    # the logs are saved to unique files even when two different binaries have
+    # common tests.
+    unique_binaries = set(os.path.basename(binary) for binary in binaries)
+    assert len(unique_binaries) == len(binaries), (
+        "All test binaries must have an unique basename.")
 
-  timeout = None
-  if options.global_timeout is not None:
-    timeout = threading.Timer(options.global_timeout, sigint_handler.interrupt)
+    if options.output_dir:
+      # Remove files from old test runs.
+      if os.path.isdir(options.output_dir):
+        shutil.rmtree(options.output_dir)
+      # Create directory for test log output.
+      try:
+        os.makedirs(options.output_dir)
+      except OSError as e:
+        # Ignore errors if this directory already exists.
+        if e.errno != errno.EEXIST or not os.path.isdir(options.output_dir):
+          raise e
 
-  xml_logger = None
-  if options.dump_xml_test_results is not None:
-    xml_logger = XMLLogger(options.dump_xml_test_results)
+    timeout = None
+    if options.global_timeout is not None:
+      timeout = threading.Timer(options.global_timeout, sigint_handler.interrupt)
 
-  save_file = get_save_file_path()
+    xml_logger = None
+    if options.dump_xml_test_results is not None:
+      # add graphics api suffix to have multiple results xml generated in different files so they don't ovverride each other.
+      if options.run_all_supported_graphics_api:
+        head, tail = os.path.split(original_dump_xml_test_results)
+        filename = tail.split('.')[0]
+        options.dump_xml_test_results = os.path.abspath(os.path.join(head, filename) + "_" + apis_directories[idx] + ".xml")
+      xml_logger = XMLLogger(options.dump_xml_test_results)
 
-  times = TestTimes(save_file)
-  logger = FilterFormat(options.output_dir)
+    save_file = get_save_file_path()
 
-  task_manager = TaskManager(times, logger, xml_logger, Task, options.output_dir,
-                             options.retry_failed, options.repeat + 1)
+    times = TestTimes(save_file)
+    logger = FilterFormat(options.output_dir)
 
-  tasks = find_tests(binaries, additional_args, options, times)
-  logger.log_tasks(len(tasks))
-  execute_tasks(tasks, options.workers, task_manager,
-                timeout, options.serialize_test_cases, options.suppress_individual_test_output)
+    task_manager = TaskManager(times, logger, xml_logger, Task, options.output_dir,
+                              options.retry_failed, options.repeat + 1)
 
-  print_try_number = options.retry_failed > 0 or options.repeat > 1
-  if task_manager.passed:
-    logger.move_to('passed', task_manager.passed)
-    if options.print_test_times:
-      logger.print_tests('PASSED TESTS', task_manager.passed, print_try_number)
+    tasks = find_tests(binaries, additional_args, options, times)
+    logger.log_tasks(len(tasks))
+    execute_tasks(tasks, options.workers, task_manager,
+                  timeout, options.serialize_test_cases, options.suppress_individual_test_output)
 
-  if task_manager.failed:
-    logger.print_tests('FAILED TESTS', task_manager.failed, print_try_number)
-    logger.move_to('failed', task_manager.failed)
+    print_try_number = options.retry_failed > 0 or options.repeat > 1
+    if task_manager.passed:
+      logger.move_to('passed', task_manager.passed)
+      if options.print_test_times:
+        logger.print_tests('PASSED TESTS', task_manager.passed, print_try_number)
 
-  if task_manager.started:
-    logger.print_tests(
-        'INTERRUPTED TESTS', task_manager.started.values(), print_try_number)
-    logger.move_to('interrupted', task_manager.started.values())
+    if task_manager.failed:
+      logger.print_tests('FAILED TESTS', task_manager.failed, print_try_number)
+      logger.move_to('failed', task_manager.failed)
 
-  if options.repeat > 1 and (task_manager.failed or task_manager.started):
-    logger.summarize(task_manager.passed, task_manager.failed,
-                     task_manager.started.values())
+    if task_manager.started:
+      logger.print_tests(
+          'INTERRUPTED TESTS', task_manager.started.values(), print_try_number)
+      logger.move_to('interrupted', task_manager.started.values())
 
-  logger.flush()
-  times.write_to_file(save_file)
-  if xml_logger:
-    xml_logger.dump_to_file_and_close()
+    if options.repeat > 1 and (task_manager.failed or task_manager.started):
+      logger.summarize(task_manager.passed, task_manager.failed,
+                      task_manager.started.values())
+
+    logger.flush()
+    times.write_to_file(save_file)
+    if xml_logger:
+      xml_logger.dump_to_file_and_close()
 
   if sigint_handler.got_sigint():
     return -signal.SIGINT
