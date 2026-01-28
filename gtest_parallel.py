@@ -187,14 +187,14 @@ class Task(object):
   Additionaly we store the last execution time, so that next time the test is
   executed, the slowest tests are run first.
   """
-  def __init__(self, 
-               test_binary, 
-               test_name, 
+  def __init__(self,
+               test_binary,
+               test_name,
                test_command,
                test_timeout,
-               should_log_xml, 
+               should_log_xml,
                execution_number,
-               last_execution_time, 
+               last_execution_time,
                output_dir):
     self.test_name = test_name
     self.output_dir = output_dir
@@ -213,7 +213,7 @@ class Task(object):
     self.task_id = (test_binary, test_name, self.execution_number)
     self.log_file = Task._logname(self.output_dir, self.test_binary,
                                   test_name, self.execution_number)
-    
+
     # xml file is located in the same space as the log file,
     # with the same root name, but a different extension (.xml)
     self.xml_file = None
@@ -317,22 +317,22 @@ class XMLLogger(object):
         if line == '\n': # skip lines that only contain linefeed
           continue
         stripped = line.strip()
-        if ((success_pattern.search(stripped) is not None) or 
+        if ((success_pattern.search(stripped) is not None) or
             (passed_pattern.search(stripped) is not None) or
             (failure_pattern.search(stripped) is not None) or
-            (size_pattern.search(stripped) is not None) or 
-            (status_pattern.search(stripped) is not None) or 
-            (summary_pattern.search(stripped) is not None)): 
+            (size_pattern.search(stripped) is not None) or
+            (status_pattern.search(stripped) is not None) or
+            (summary_pattern.search(stripped) is not None)):
           continue
         output += line
     return output
 
   def __generate_blank_xml(self, test_name, runtime_ms):
     """
-    Generate blank XML for a test matching the GoogleTest XML format, 
+    Generate blank XML for a test matching the GoogleTest XML format,
     given the test's name and runtime.
     """
-    suites_state = {'tests': '1', 
+    suites_state = {'tests': '1',
                     'failures': '0',
                     'disabled': '0',
                     'errors': '0',
@@ -352,7 +352,7 @@ class XMLLogger(object):
                   'classname': suite_and_test_name[0]}
     test = ET.SubElement(suite, 'testcase', test_state)
     return ET.ElementTree(suites)
-  
+
   def __construct_from_timeout(self, task):
     """
     Helper: Construct conformant XML from a test that has timed out (and thus hasn't
@@ -392,7 +392,7 @@ class XMLLogger(object):
     Helper: Generate valid / conformant XML given a Task and its Result. Handles
     PASS, TIMEOUT, and FAILURE TaskOutcomes.
     """
-    if result is TaskOutcome.PASS: 
+    if result is TaskOutcome.PASS:
       return ET.parse(task.xml_file)
     if result is TaskOutcome.TIMEOUT:
       return self.__construct_from_timeout(task)
@@ -424,7 +424,7 @@ class XMLLogger(object):
             increment_count(existing_suite, 'errors')
             increment_count(testsuites, 'errors')
           if suite_to_add.get('skipped') != '0':
-            increment_count(existing_suite, 'skipped') # skipped not a member of `testsuites` 
+            increment_count(existing_suite, 'skipped') # skipped not a member of `testsuites`
           # then, append each test case to main_XML testsuite
           for case in suite_to_add:
             increment_count(existing_suite, 'tests')
@@ -517,7 +517,7 @@ class TaskManager(object):
         try:
           os.remove(log)
         except OSError as e:
-          if e.errno is not errno.ENOENT: 
+          if e.errno is not errno.ENOENT:
             if i is num_tries - 1:
               self.out.permanent_line('Could not remove temporary log file: ' + str(e))
             else:
@@ -561,7 +561,7 @@ class TaskManager(object):
         execution_number = self.__get_next_execution_number(task.test_id)
         # We need create a new Task instance. Each task represents a single test
         # execution, with its own runtime, exit code and log file.
-        task = self.task_factory(task.test_binary, 
+        task = self.task_factory(task.test_binary,
                                  task.test_name,
                                  task.test_command,
                                  task.test_timeout,
@@ -825,7 +825,7 @@ def parse_test_names(test_binary, list_command, run_disabled_tests):
     # Skip PRE_ tests which are used by Chromium.
     if '.PRE_' in test_name :
       continue
-    
+
     tests.append(test_name)
 
   return tests
@@ -857,7 +857,7 @@ def find_tests(binaries, additional_args, options, times):
       list_command += ['--gtest_filter=' + options.gtest_filter]
 
     command += ['--gtest_color=' + options.gtest_color]
-    
+
     test_names = parse_test_names(test_binary, list_command, options.gtest_also_run_disabled_tests)
     for test_name in test_names:
       test_command = command + ['--test=' + test_name]
@@ -878,11 +878,11 @@ def find_tests(binaries, additional_args, options, times):
       last_execution_time = times.get_test_time(test_binary, test_name)
       if options.failed and last_execution_time is not None:
         continue
-      
+
       should_log_xml = options.dump_xml_test_results
       if (test_count - options.shard_index) % options.shard_count == 0:
         for execution_number in range(options.repeat):
-          tasks.append(Task(test_binary, 
+          tasks.append(Task(test_binary,
                             test_name,
                             test_command,
                             timeout,
@@ -962,7 +962,7 @@ class PassThroughOptionParser(optparse.OptionParser):
     calling parse_args()
 
     sys.exit(status) will still be called if a known argument is passed
-    incorrectly (e.g. missing arguments or bad argument types, etc.)        
+    incorrectly (e.g. missing arguments or bad argument types, etc.)
     """
     def _init_parsing_state(self):
         # These are set in parse_args() for the convenience of callbacks.
@@ -1009,7 +1009,7 @@ def default_options_parser():
                     help='test filter')
   parser.add_option('--test', action='append', type='string', default=[],
                     help='select a specific test or tests to run')
-  parser.add_option('--size', type='string', default='', 
+  parser.add_option('--size', type='string', default='',
                     help='select a test size (S, M, L, XL, *) to run')
   parser.add_option('--gtest_also_run_disabled_tests', action='store_true',
                     default=False, help='run disabled tests too')
