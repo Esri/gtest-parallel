@@ -875,6 +875,11 @@ def find_tests(binaries, additional_args, options, times):
       elif test_name in test_sizes['x']:
         timeout = 600
 
+      # if the test binary was built with sanitizers, tests execute slower,
+      # so double the timeout
+      if options.sanitized_test_binary:
+        timeout *= 2
+
       last_execution_time = times.get_test_time(test_binary, test_name)
       if options.failed and last_execution_time is not None:
         continue
@@ -1034,6 +1039,10 @@ def default_options_parser():
   parser.add_option('--suppress_individual_test_output',
                     action='store_true',
                     help='Do not print individual test output')
+  parser.add_option('--sanitized_test_binary',
+                    action='store_true',
+                    default=False,
+                    help='Increases timeout lengths for test binaries built with sanitizers.')
   return parser
 
 
